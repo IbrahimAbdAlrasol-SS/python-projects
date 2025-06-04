@@ -1,3 +1,4 @@
-﻿from .sample_data import SampleDataGenerator, test_sample_data
+# Minimal data package init
+# No complex imports
 
-__all__ = ['SampleDataGenerator', 'test_sample_data']
+__all__ = []
