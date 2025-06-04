@@ -1,6 +1,6 @@
 ﻿"""
 Users Model
-نموذج المستخدمين الأساسي
+نموذج المستخدمين الأساسي - FIXED RELATIONSHIPS
 """
 
 from config.database import db
@@ -37,9 +37,8 @@ class User(BaseModel):
     is_active = db.Column(db.Boolean, default=True, nullable=False)
     last_login = db.Column(db.DateTime, nullable=True)
     
-    # Relationships
-    student = db.relationship('Student', backref='user', uselist=False, cascade='all, delete-orphan')
-    teacher = db.relationship('Teacher', backref='user', uselist=False, cascade='all, delete-orphan')
+    # FIXED: Use string references instead of class names
+    # Relationships will be properly loaded after all models are imported
     
     def set_password(self, password):
         """Set password hash"""
@@ -56,6 +55,20 @@ class User(BaseModel):
         self.last_login = datetime.utcnow()
         self.save()
     
+    def get_student_profile(self):
+        """Get student profile if user is a student"""
+        if self.role == UserRole.STUDENT:
+            from .students import Student
+            return Student.query.filter_by(user_id=self.id).first()
+        return None
+    
+    def get_teacher_profile(self):
+        """Get teacher profile if user is a teacher"""
+        if self.role == UserRole.TEACHER:
+            from .teachers import Teacher
+            return Teacher.query.filter_by(user_id=self.id).first()
+        return None
+    
     def to_dict(self, include_sensitive=False):
         """Convert to dictionary with optional sensitive data"""
         data = super().to_dict()
@@ -68,6 +81,21 @@ class User(BaseModel):
         data['role'] = self.role.value if self.role else None
         
         return data
+    
+    @classmethod
+    def find_by_username(cls, username):
+        """Find user by username"""
+        return cls.query.filter_by(username=username).first()
+    
+    @classmethod
+    def find_by_email(cls, email):
+        """Find user by email"""
+        return cls.query.filter_by(email=email).first()
+    
+    @classmethod
+    def get_by_role(cls, role):
+        """Get users by role"""
+        return cls.query.filter_by(role=role).all()
     
     def __repr__(self):
         return f'<User {self.username} ({self.role.value if self.role else "No Role"})>'
