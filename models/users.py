@@ -36,6 +36,9 @@ class User(BaseModel):
     role = db.Column(db.Enum(UserRole), nullable=False, index=True)
     is_active = db.Column(db.Boolean, default=True, nullable=False)
     last_login = db.Column(db.DateTime, nullable=True)
+    last_lockout = db.Column(db.DateTime, nullable=True)
+    failed_login_attempts = db.Column(db.Integer, default=0)
+    last_failed_login = db.Column(db.DateTime, nullable=True)
     
     # FIXED: Use string references instead of class names
     # Relationships will be properly loaded after all models are imported

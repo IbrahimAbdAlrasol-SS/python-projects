@@ -2,7 +2,7 @@
 Main Application File
 الملف الرئيسي للتطبيق - Windows Compatible
 """
-
+from security.setup_security import setup_complete_security
 from flask import Flask, jsonify
 from config.database import DatabaseConfig
 
