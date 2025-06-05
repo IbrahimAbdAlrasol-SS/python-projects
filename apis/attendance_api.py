@@ -1,5 +1,5 @@
 """
-✅ Attendance/Core Operations APIs - مجموعة عمليات الحضور الأساسية
+✅ Attendance/Core Operations APIs - مجموعة عمليات الحضور الأساسية (FIXED)
 Group 3: Core Operations APIs (4 endpoints)
 """
 
@@ -12,7 +12,7 @@ from models import (
 )
 from utils.response_helpers import (
     success_response, error_response, batch_response,
-    validation_error_response
+    validation_error_response, ResponseHelper
 )
 from utils.validation_helpers import (
     validate_required_fields, validate_bulk_operation_limit,
@@ -26,15 +26,29 @@ import uuid
 # Create blueprint
 attendance_bp = Blueprint('attendance', __name__, url_prefix='/api/attendance')
 
+def apply_rate_limit():
+    """Apply rate limiting if available"""
+    try:
+        if hasattr(current_app, 'limiter'):
+            current_app.limiter.check()
+    except Exception as e:
+        return jsonify(ResponseHelper.rate_limit_response()), 429
+    return None
+
 @attendance_bp.route('/generate-qr/<int:lecture_id>', methods=['POST'])
 @jwt_required
 @require_permission('generate_qr')
 def generate_qr_code(lecture_id):
     """
-    POST /api/lectures/generate-qr/<id>
+    POST /api/attendance/generate-qr/<id>
     Generate QR code for lecture attendance
     توليد رمز QR لحضور المحاضرة
     """
+    # Apply rate limiting
+    rate_limit_response = apply_rate_limit()
+    if rate_limit_response:
+        return rate_limit_response
+    
     try:
         # 1. Find lecture
         lecture = Lecture.query.get(lecture_id)

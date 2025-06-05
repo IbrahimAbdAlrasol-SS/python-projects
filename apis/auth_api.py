@@ -20,6 +20,18 @@ import uuid
 # Create blueprint
 auth_bp = Blueprint('auth', __name__, url_prefix='/api/auth')
 
+def apply_rate_limit():
+    """Apply rate limiting if available"""
+    try:
+        if hasattr(current_app, 'limiter'):
+            current_app.limiter.check()
+    except Exception as e:
+        return jsonify(error_response(
+            'RATE_LIMIT_EXCEEDED',
+            'تم تجاوز الحد المسموح من المحاولات، يرجى المحاولة لاحقاً'
+        )), 429
+    return None
+
 @auth_bp.route('/student-login', methods=['POST'])
 def student_login():
     """
@@ -27,17 +39,10 @@ def student_login():
     Student authentication with university_id + secret_code
     مصادقة الطلاب بالرقم الجامعي + الكود السري
     """
-    # Apply rate limiting within the function
-    from flask_limiter import Limiter
-    if hasattr(current_app, 'limiter'):
-        # Check if rate limit is exceeded
-        try:
-            current_app.limiter.check()
-        except Exception as e:
-            return jsonify(error_response(
-                'RATE_LIMIT_EXCEEDED',
-                'تم تجاوز الحد المسموح من المحاولات، يرجى المحاولة لاحقاً'
-            )), 429
+    # Apply rate limiting
+    rate_limit_response = apply_rate_limit()
+    if rate_limit_response:
+        return rate_limit_response
     
     try:
         # 1. Input validation
@@ -160,15 +165,10 @@ def teacher_login():
     Teacher authentication with username + password
     مصادقة المدرسين باسم المستخدم + كلمة المرور
     """
-    # في دالة teacher_login
-    if hasattr(current_app, 'limiter'):
-        try:
-            current_app.limiter.check()
-        except Exception as e:
-            return jsonify(error_response(
-                'RATE_LIMIT_EXCEEDED',
-                'تم تجاوز الحد المسموح من المحاولات، يرجى المحاولة لاحقاً'
-            )), 429
+    # Apply rate limiting
+    rate_limit_response = apply_rate_limit()
+    if rate_limit_response:
+        return rate_limit_response
     
     try:
         # 1. Input validation

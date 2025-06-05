@@ -1,256 +1,390 @@
 """
-🔧 Response Helpers - مساعدات الاستجابات
-Standardized API response helpers
+📄 Response Helpers - نظام الاستجابات الموحد
+Standardized response format for all API endpoints
+نظام موحد لجميع استجابات الـ APIs
 """
 
 from datetime import datetime
-from typing import Any, Dict, List, Optional
-from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Union
+from dataclasses import dataclass, asdict
+import json
 
 @dataclass
-class StandardResponse:
-    """Standardized API response format"""
+class APIResponse:
+    """Standardized API response structure"""
     success: bool
+    message: str = ""
     data: Optional[Any] = None
     error: Optional[Dict[str, Any]] = None
     pagination: Optional[Dict[str, Any]] = None
     meta: Optional[Dict[str, Any]] = None
-    timestamp: Optional[str] = None
-
-    def to_dict(self):
+    timestamp: str = ""
+    
+    def __post_init__(self):
+        if not self.timestamp:
+            self.timestamp = datetime.utcnow().isoformat() + 'Z'
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary, excluding None values"""
         result = {
             'success': self.success,
-            'timestamp': self.timestamp or datetime.utcnow().isoformat()
+            'timestamp': self.timestamp
         }
+        
+        if self.message:
+            result['message'] = self.message
         
         if self.data is not None:
             result['data'] = self.data
+        
         if self.error is not None:
             result['error'] = self.error
+        
         if self.pagination is not None:
             result['pagination'] = self.pagination
+        
         if self.meta is not None:
             result['meta'] = self.meta
             
         return result
 
-def success_response(data=None, pagination=None, meta=None, message=None):
+def success_response(
+    data: Optional[Any] = None,
+    message: str = "تم تنفيذ العملية بنجاح",
+    pagination: Optional[Dict[str, Any]] = None,
+    meta: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
     """
-    Create standardized success response
+    Generate successful response
     
     Args:
-        data: Response data
+        data: Response data (can be dict, list, or primitive)
+        message: Success message in Arabic
         pagination: Pagination info for list endpoints
         meta: Additional metadata
-        message: Success message
     
     Returns:
-        dict: Standardized success response
+        Standardized success response dictionary
     """
-    response = StandardResponse(success=True, data=data, pagination=pagination, meta=meta)
-    
-    if message:
-        if response.meta is None:
-            response.meta = {}
-        response.meta['message'] = message
-    
+    response = APIResponse(
+        success=True,
+        message=message,
+        data=data,
+        pagination=pagination,
+        meta=meta
+    )
     return response.to_dict()
 
-def error_response(code, message, details=None, status_code=None):
+def error_response(
+    code: str,
+    message: str,
+    details: Optional[Dict[str, Any]] = None,
+    status_code: Optional[int] = None
+) -> Dict[str, Any]:
     """
-    Create standardized error response
+    Generate error response
     
     Args:
-        code: Error code (e.g., 'INVALID_INPUT')
-        message: Human-readable error message
+        code: Error code (e.g., 'INVALID_INPUT', 'USER_NOT_FOUND')
+        message: Error message in Arabic
         details: Additional error details
-        status_code: HTTP status code
+        status_code: HTTP status code for logging
     
     Returns:
-        dict: Standardized error response
+        Standardized error response dictionary
     """
-    error = {
+    error_data = {
         'code': code,
-        'message': message,
-        'timestamp': datetime.utcnow().isoformat()
+        'message': message
     }
     
     if details:
-        error['details'] = details
+        error_data['details'] = details
     
     if status_code:
-        error['status_code'] = status_code
+        error_data['status_code'] = status_code
     
-    return StandardResponse(success=False, error=error).to_dict()
+    response = APIResponse(
+        success=False,
+        error=error_data
+    )
+    return response.to_dict()
 
-def paginated_response(items, page, limit, total_count, additional_data=None):
+def validation_error_response(
+    validation_errors: Dict[str, List[str]],
+    message: str = "بيانات غير صحيحة"
+) -> Dict[str, Any]:
     """
-    Create paginated response
+    Generate validation error response
     
     Args:
-        items: List of items for current page
-        page: Current page number
-        limit: Items per page
-        total_count: Total number of items
-        additional_data: Additional data to include
+        validation_errors: Field-specific validation errors
+        message: General validation message
     
     Returns:
-        dict: Paginated response
-    """
-    total_pages = (total_count + limit - 1) // limit  # Ceiling division
-    
-    pagination = {
-        'current_page': page,
-        'items_per_page': limit,
-        'total_items': total_count,
-        'total_pages': total_pages,
-        'has_next': page < total_pages,
-        'has_previous': page > 1,
-        'next_page': page + 1 if page < total_pages else None,
-        'previous_page': page - 1 if page > 1 else None
-    }
-    
-    data = {
-        'items': items,
-        'count': len(items)
-    }
-    
-    if additional_data:
-        data.update(additional_data)
-    
-    return success_response(data=data, pagination=pagination)
-
-def validation_error_response(field_errors):
-    """
-    Create validation error response
-    
-    Args:
-        field_errors: Dict of field validation errors
-    
-    Returns:
-        dict: Validation error response
+        Standardized validation error response
     """
     return error_response(
         code='VALIDATION_ERROR',
-        message='بيانات غير صحيحة',
+        message=message,
         details={
-            'field_errors': field_errors,
-            'total_errors': len(field_errors)
+            'validation_errors': validation_errors,
+            'fields_with_errors': list(validation_errors.keys())
         }
     )
 
-def not_found_response(resource_type, identifier=None):
+def not_found_response(
+    resource_type: str,
+    resource_id: Optional[Union[str, int]] = None
+) -> Dict[str, Any]:
     """
-    Create not found error response
+    Generate not found error response
     
     Args:
-        resource_type: Type of resource (e.g., 'student', 'lecture')
-        identifier: Resource identifier
+        resource_type: Type of resource (e.g., 'طالب', 'مدرس', 'قاعة')
+        resource_id: ID of the resource that wasn't found
     
     Returns:
-        dict: Not found error response
+        Standardized not found response
     """
-    message = f'{resource_type} غير موجود'
-    if identifier:
-        message += f': {identifier}'
+    message = f"{resource_type} غير موجود"
+    if resource_id:
+        message += f" (ID: {resource_id})"
     
     return error_response(
         code='NOT_FOUND',
         message=message,
-        details={'resource_type': resource_type, 'identifier': identifier}
+        details={'resource_type': resource_type, 'resource_id': resource_id}
     )
 
-def unauthorized_response(message='غير مصرح بالوصول'):
-    """Create unauthorized error response"""
+def unauthorized_response(
+    message: str = "غير مصرح لك بالوصول لهذا المورد"
+) -> Dict[str, Any]:
+    """Generate unauthorized access response"""
     return error_response(
         code='UNAUTHORIZED',
         message=message
     )
 
-def forbidden_response(message='صلاحيات غير كافية'):
-    """Create forbidden error response"""
+def forbidden_response(
+    message: str = "ليس لديك صلاحية لتنفيذ هذه العملية"
+) -> Dict[str, Any]:
+    """Generate forbidden access response"""
     return error_response(
         code='FORBIDDEN',
         message=message
     )
 
-def rate_limit_response(retry_after=None):
-    """Create rate limit exceeded error response"""
-    details = {}
-    if retry_after:
-        details['retry_after'] = retry_after
-    
-    return error_response(
-        code='RATE_LIMIT_EXCEEDED',
-        message='تم تجاوز الحد المسموح من الطلبات',
-        details=details
-    )
-
-def server_error_response(message='حدث خطأ في الخادم'):
-    """Create internal server error response"""
-    return error_response(
-        code='INTERNAL_SERVER_ERROR',
-        message=message
-    )
-
-def batch_response(results, summary=None):
+def paginated_response(
+    items: List[Any],
+    page: int,
+    limit: int,
+    total_count: int,
+    message: str = "تم جلب البيانات بنجاح",
+    additional_data: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
     """
-    Create batch operation response
+    Generate paginated response
     
     Args:
-        results: List of operation results
-        summary: Summary of batch operation
+        items: List of items for current page
+        page: Current page number (1-based)
+        limit: Items per page
+        total_count: Total number of items
+        message: Success message
+        additional_data: Additional data to include in response
     
     Returns:
-        dict: Batch operation response
+        Standardized paginated response
     """
-    if not summary:
-        successful = sum(1 for result in results if result.get('success', False))
-        failed = len(results) - successful
-        
-        summary = {
-            'total': len(results),
-            'successful': successful,
-            'failed': failed,
-            'success_rate': round((successful / len(results)) * 100, 2) if results else 0
-        }
+    total_pages = (total_count + limit - 1) // limit  # Ceiling division
+    
+    pagination = {
+        'current_page': page,
+        'per_page': limit,
+        'total_pages': total_pages,
+        'total_count': total_count,
+        'has_next': page < total_pages,
+        'has_prev': page > 1,
+        'next_page': page + 1 if page < total_pages else None,
+        'prev_page': page - 1 if page > 1 else None
+    }
+    
+    # Prepare response data
+    response_data = {
+        'items': items,
+        'count': len(items)
+    }
+    
+    # Add additional data if provided
+    if additional_data:
+        response_data.update(additional_data)
     
     return success_response(
-        data={'results': results},
-        meta={'batch_summary': summary}
+        data=response_data,
+        message=message,
+        pagination=pagination
     )
 
-# Response decorators for common patterns
-def api_response(func):
-    """Decorator to wrap function with standardized response handling"""
-    from functools import wraps
+def batch_response(
+    results: List[Dict[str, Any]],
+    summary: Dict[str, Any],
+    message: str = "تم معالجة العملية الجماعية"
+) -> Dict[str, Any]:
+    """
+    Generate batch operation response
     
-    @wraps(func)
-    def wrapper(*args, **kwargs):
-        try:
-            result = func(*args, **kwargs)
-            
-            # If function returns tuple, assume (data, status_code)
-            if isinstance(result, tuple):
-                data, status_code = result
-                return success_response(data), status_code
-            
-            # If function returns dict with 'success' key, return as is
-            if isinstance(result, dict) and 'success' in result:
-                return result
-            
-            # Otherwise wrap in success response
-            return success_response(result)
-            
-        except ValueError as e:
-            return error_response('VALIDATION_ERROR', str(e)), 400
-        except PermissionError as e:
-            return forbidden_response(str(e)), 403
-        except FileNotFoundError as e:
-            return not_found_response('Resource', str(e)), 404
-        except Exception as e:
-            import logging
-            logging.error(f'API error in {func.__name__}: {str(e)}', exc_info=True)
-            return server_error_response(), 500
+    Args:
+        results: List of individual operation results
+        summary: Summary statistics
+        message: Success message
     
-    return wrapper
+    Returns:
+        Standardized batch response
+    """
+    return success_response(
+        data={
+            'results': results,
+            'summary': summary
+        },
+        message=message,
+        meta={
+            'batch_size': len(results),
+            'operation_type': 'batch',
+            'success_rate': summary.get('success_rate', 0)
+        }
+    )
+
+def health_response(
+    status: str,
+    services: Dict[str, Any],
+    overall_health: float = 100.0
+) -> Dict[str, Any]:
+    """
+    Generate health check response
+    
+    Args:
+        status: Overall status ('healthy', 'degraded', 'unhealthy')
+        services: Individual service statuses
+        overall_health: Overall health percentage
+    
+    Returns:
+        Standardized health response
+    """
+    return success_response(
+        data={
+            'status': status,
+            'health_score': overall_health,
+            'services': services
+        },
+        message=f"حالة النظام: {status}",
+        meta={
+            'check_type': 'health',
+            'services_count': len(services),
+            'healthy_services': sum(1 for s in services.values() if s.get('status') == 'healthy')
+        }
+    )
+
+class ResponseHelper:
+    """Helper class for common response patterns"""
+    
+    @staticmethod
+    def created_response(
+        resource_data: Dict[str, Any],
+        resource_type: str = "المورد",
+        message: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Response for successful resource creation"""
+        if not message:
+            message = f"تم إنشاء {resource_type} بنجاح"
+        
+        return success_response(
+            data=resource_data,
+            message=message,
+            meta={'operation': 'create', 'resource_type': resource_type}
+        )
+    
+    @staticmethod
+    def updated_response(
+        resource_data: Dict[str, Any],
+        resource_type: str = "المورد",
+        changes_count: int = 0,
+        message: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Response for successful resource update"""
+        if not message:
+            message = f"تم تحديث {resource_type} بنجاح"
+            if changes_count > 0:
+                message += f" ({changes_count} تغيير)"
+        
+        return success_response(
+            data=resource_data,
+            message=message,
+            meta={
+                'operation': 'update',
+                'resource_type': resource_type,
+                'changes_count': changes_count
+            }
+        )
+    
+    @staticmethod
+    def deleted_response(
+        resource_id: Union[str, int],
+        resource_type: str = "المورد",
+        message: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Response for successful resource deletion"""
+        if not message:
+            message = f"تم حذف {resource_type} بنجاح"
+        
+        return success_response(
+            data={'deleted_id': resource_id},
+            message=message,
+            meta={'operation': 'delete', 'resource_type': resource_type}
+        )
+    
+    @staticmethod
+    def conflict_response(
+        message: str = "تعارض في البيانات",
+        conflicts: Optional[List[Dict[str, Any]]] = None
+    ) -> Dict[str, Any]:
+        """Response for data conflicts"""
+        details = {}
+        if conflicts:
+            details['conflicts'] = conflicts
+            details['conflicts_count'] = len(conflicts)
+        
+        return error_response(
+            code='CONFLICT',
+            message=message,
+            details=details
+        )
+    
+    @staticmethod
+    def rate_limit_response(
+        retry_after: int = 60,
+        message: str = "تم تجاوز الحد المسموح من الطلبات"
+    ) -> Dict[str, Any]:
+        """Response for rate limit exceeded"""
+        return error_response(
+            code='RATE_LIMIT_EXCEEDED',
+            message=message,
+            details={
+                'retry_after_seconds': retry_after,
+                'retry_after_formatted': f"{retry_after} ثانية"
+            }
+        )
+
+# Export commonly used functions
+__all__ = [
+    'success_response',
+    'error_response', 
+    'validation_error_response',
+    'not_found_response',
+    'unauthorized_response',
+    'forbidden_response',
+    'paginated_response',
+    'batch_response',
+    'health_response',
+    'ResponseHelper'
+]
