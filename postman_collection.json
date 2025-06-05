@@ -1,0 +1,1025 @@
+{
+  "info": {
+    "name": "Smart Attendance System API - Level 3 Complete Tests",
+    "description": "Comprehensive test collection for all 20 API endpoints\nنظام الحضور الذكي - اختبارات شاملة لجميع الـ 20 endpoint",
+    "version": "1.0.0",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{access_token}}",
+        "type": "string"
+      }
+    ]
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Set base URL",
+          "pm.environment.set('base_url', 'http://localhost:5000');",
+          "",
+          "// Add request timestamp",
+          "pm.environment.set('timestamp', new Date().toISOString());"
+        ]
+      }
+    },
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Global test for all requests",
+          "pm.test('Response time is acceptable', function () {",
+          "    pm.expect(pm.response.responseTime).to.be.below(5000);",
+          "});",
+          "",
+          "pm.test('Response has required structure', function () {",
+          "    const response = pm.response.json();",
+          "    pm.expect(response).to.have.property('success');",
+          "    pm.expect(response).to.have.property('timestamp');",
+          "});"
+        ]
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:5000"
+    },
+    {
+      "key": "access_token",
+      "value": ""
+    },
+    {
+      "key": "student_university_id",
+      "value": "CS2021001"
+    },
+    {
+      "key": "student_secret_code",
+      "value": "SECRET01"
+    },
+    {
+      "key": "teacher_username",
+      "value": "dr_ahmed"
+    },
+    {
+      "key": "teacher_password",
+      "value": "Password123!"
+    }
+  ],
+  "item": [
+    {
+      "name": "🏠 System Info",
+      "item": [
+        {
+          "name": "Root - API Information",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/",
+              "host": ["{{base_url}}"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('API is operational', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    const response = pm.response.json();",
+                  "    pm.expect(response.data.status).to.eql('operational');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "API Info",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/info",
+              "host": ["{{base_url}}"],
+              "path": ["api", "info"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('API info contains 20 endpoints', function () {",
+                  "    const response = pm.response.json();",
+                  "    pm.expect(response.data.total_endpoints).to.eql(20);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "🔐 Authentication APIs (3 endpoints)",
+      "item": [
+        {
+          "name": "1. Student Login",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"university_id\": \"{{student_university_id}}\",\n  \"secret_code\": \"{{student_secret_code}}\",\n  \"device_fingerprint\": \"test-device-001\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/auth/student-login",
+              "host": ["{{base_url}}"],
+              "path": ["api", "auth", "student-login"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Student login successful', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    const response = pm.response.json();",
+                  "    pm.expect(response.data).to.have.property('access_token');",
+                  "    ",
+                  "    // Store token for future requests",
+                  "    pm.environment.set('access_token', response.data.access_token);",
+                  "    pm.environment.set('student_id', response.data.user.id);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2. Teacher Login",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{teacher_username}}\",\n  \"password\": \"{{teacher_password}}\",\n  \"device_fingerprint\": \"teacher-device-001\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/auth/teacher-login",
+              "host": ["{{base_url}}"],
+              "path": ["api", "auth", "teacher-login"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Teacher login successful', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    const response = pm.response.json();",
+                  "    pm.expect(response.data).to.have.property('access_token');",
+                  "    ",
+                  "    // Store teacher token",
+                  "    pm.environment.set('teacher_token', response.data.access_token);",
+                  "    pm.environment.set('teacher_id', response.data.user.id);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3. Refresh Token",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/auth/refresh-token",
+              "host": ["{{base_url}}"],
+              "path": ["api", "auth", "refresh-token"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Token refresh successful', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    const response = pm.response.json();",
+                  "    pm.expect(response.data).to.have.property('access_token');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "🔄 Pre-Sync APIs (4 endpoints)",
+      "item": [
+        {
+          "name": "4. Student Sync Data",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              },
+              {
+                "key": "X-Client-Timezone",
+                "value": "Asia/Baghdad"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/student/sync-data",
+              "host": ["{{base_url}}"],
+              "path": ["api", "student", "sync-data"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Sync data successful', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    const response = pm.response.json();",
+                  "    pm.expect(response.data).to.have.property('student_profile');",
+                  "    pm.expect(response.data).to.have.property('subjects');",
+                  "    pm.expect(response.data).to.have.property('schedules');",
+                  "    pm.expect(response.data).to.have.property('rooms');",
+                  "    pm.expect(response.data).to.have.property('lectures');",
+                  "    ",
+                  "    // Store sync metadata for incremental sync",
+                  "    pm.environment.set('last_sync', response.data.sync_metadata.sync_timestamp);",
+                  "    pm.environment.set('data_version', response.data.sync_metadata.data_version);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "5. Incremental Sync",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/student/incremental-sync?last_sync={{last_sync}}&data_version={{data_version}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "student", "incremental-sync"],
+              "query": [
+                {
+                  "key": "last_sync",
+                  "value": "{{last_sync}}"
+                },
+                {
+                  "key": "data_version",
+                  "value": "{{data_version}}"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Incremental sync successful', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    const response = pm.response.json();",
+                  "    pm.expect(response.data).to.have.property('changes');",
+                  "    pm.expect(response.data).to.have.property('has_changes');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "6. Student Schedule",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/student/schedule?academic_year=2023-2024&semester=first",
+              "host": ["{{base_url}}"],
+              "path": ["api", "student", "schedule"],
+              "query": [
+                {
+                  "key": "academic_year",
+                  "value": "2023-2024"
+                },
+                {
+                  "key": "semester",
+                  "value": "first"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Schedule retrieved successfully', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    const response = pm.response.json();",
+                  "    pm.expect(response.data).to.have.property('weekly_schedule');",
+                  "    pm.expect(response.data).to.have.property('schedule_statistics');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "7. Rooms Bulk Download",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/rooms/bulk-download?building=مبنى A&include_inactive=false",
+              "host": ["{{base_url}}"],
+              "path": ["api", "rooms", "bulk-download"],
+              "query": [
+                {
+                  "key": "building",
+                  "value": "مبنى A"
+                },
+                {
+                  "key": "include_inactive",
+                  "value": "false"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Rooms downloaded successfully', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    const response = pm.response.json();",
+                  "    pm.expect(response.data).to.have.property('rooms');",
+                  "    pm.expect(response.data).to.have.property('buildings');",
+                  "    pm.expect(response.data).to.have.property('summary');",
+                  "    ",
+                  "    // Store room ID for later tests",
+                  "    if (response.data.rooms.length > 0) {",
+                  "        pm.environment.set('room_id', response.data.rooms[0].id);",
+                  "    }",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "👑 Admin Management APIs (6 endpoints)",
+      "item": [
+        {
+          "name": "8. Get Students List",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{teacher_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/admin/students?page=1&limit=10&section=A&study_year=1&sort_by=university_id&sort_order=asc",
+              "host": ["{{base_url}}"],
+              "path": ["api", "admin", "students"],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "limit",
+                  "value": "10"
+                },
+                {
+                  "key": "section",
+                  "value": "A"
+                },
+                {
+                  "key": "study_year",
+                  "value": "1"
+                },
+                {
+                  "key": "sort_by",
+                  "value": "university_id"
+                },
+                {
+                  "key": "sort_order",
+                  "value": "asc"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Students list retrieved', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    const response = pm.response.json();",
+                  "    pm.expect(response.data).to.have.property('items');",
+                  "    pm.expect(response).to.have.property('pagination');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "9. Bulk Create Students",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{teacher_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"students\": [\n    {\n      \"full_name\": \"طالب تجريبي واحد\",\n      \"email\": \"test1@university.edu\",\n      \"section\": \"A\",\n      \"study_year\": 1,\n      \"study_type\": \"morning\",\n      \"phone\": \"+96477123001\"\n    },\n    {\n      \"full_name\": \"طالب تجريبي اثنان\",\n      \"email\": \"test2@university.edu\",\n      \"section\": \"B\",\n      \"study_year\": 2,\n      \"study_type\": \"morning\",\n      \"phone\": \"+96477123002\"\n    }\n  ],\n  \"options\": {\n    \"auto_generate_codes\": true,\n    \"skip_duplicates\": true,\n    \"default_password\": \"NewStudent123!\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/admin/students/bulk-create",
+              "host": ["{{base_url}}"],
+              "path": ["api", "admin", "students", "bulk-create"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Bulk student creation successful', function () {",
+                  "    pm.response.to.have.status(201);",
+                  "    const response = pm.response.json();",
+                  "    pm.expect(response.data).to.have.property('creation_results');",
+                  "    pm.expect(response.data).to.have.property('summary');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "10. Create Room",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{teacher_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"TEST101\",\n  \"building\": \"مبنى الاختبار\",\n  \"floor\": 1,\n  \"room_type\": \"classroom\",\n  \"capacity\": 30,\n  \"center_latitude\": 33.3152,\n  \"center_longitude\": 44.3661,\n  \"ground_reference_altitude\": 50.0,\n  \"floor_altitude\": 53.5,\n  \"ceiling_height\": 3.0,\n  \"wifi_ssid\": \"University_TEST101\",\n  \"polygon_width_meters\": 8.0,\n  \"polygon_height_meters\": 6.0\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/admin/rooms",
+              "host": ["{{base_url}}"],
+              "path": ["api", "admin", "rooms"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Room creation successful', function () {",
+                  "    pm.response.to.have.status(201);",
+                  "    const response = pm.response.json();",
+                  "    pm.expect(response.data).to.have.property('id');",
+                  "    pm.expect(response.data).to.have.property('location');",
+                  "    ",
+                  "    // Store created room ID",
+                  "    pm.environment.set('created_room_id', response.data.id);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "11. Update Room",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{teacher_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"capacity\": 35,\n  \"wifi_ssid\": \"University_TEST101_Updated\",\n  \"is_active\": true\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/admin/rooms/{{created_room_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "admin", "rooms", "{{created_room_id}}"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Room update successful', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    const response = pm.response.json();",
+                  "    pm.expect(response.data.capacity).to.eql(35);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "12. Bulk Create Schedules",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{teacher_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"schedules\": [\n    {\n      \"subject_id\": 1,\n      \"teacher_id\": 1,\n      \"room_id\": 1,\n      \"section\": \"A\",\n      \"day_of_week\": 1,\n      \"start_time\": \"08:00\",\n      \"end_time\": \"10:00\"\n    },\n    {\n      \"subject_id\": 2,\n      \"teacher_id\": 1,\n      \"room_id\": 2,\n      \"section\": \"B\",\n      \"day_of_week\": 2,\n      \"start_time\": \"10:00\",\n      \"end_time\": \"12:00\"\n    }\n  ],\n  \"options\": {\n    \"academic_year\": \"2023-2024\",\n    \"semester\": \"first\",\n    \"check_conflicts\": true,\n    \"auto_resolve_conflicts\": false\n  }\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/admin/schedules/bulk-create",
+              "host": ["{{base_url}}"],
+              "path": ["api", "admin", "schedules", "bulk-create"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Bulk schedule creation attempted', function () {",
+                  "    // May return 201 (success) or 200 (with conflicts)",
+                  "    pm.expect(pm.response.code).to.be.oneOf([200, 201]);",
+                  "    const response = pm.response.json();",
+                  "    pm.expect(response.data).to.have.property('creation_results');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "13. System Health",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{teacher_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/admin/system/health",
+              "host": ["{{base_url}}"],
+              "path": ["api", "admin", "system", "health"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('System health check successful', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    const response = pm.response.json();",
+                  "    pm.expect(response.data).to.have.property('system_status');",
+                  "    pm.expect(response.data).to.have.property('components');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "⚡ Core Operations APIs (4 endpoints)",
+      "item": [
+        {
+          "name": "14. Generate QR Code",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{teacher_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"duration_minutes\": 15,\n  \"max_usage_count\": 100,\n  \"allow_multiple_scans\": true,\n  \"force_new\": false\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/lectures/1/generate-qr",
+              "host": ["{{base_url}}"],
+              "path": ["api", "lectures", "1", "generate-qr"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('QR generation successful or existing', function () {",
+                  "    pm.expect(pm.response.code).to.be.oneOf([200, 201]);",
+                  "    const response = pm.response.json();",
+                  "    pm.expect(response.data).to.have.property('qr_session');",
+                  "    pm.expect(response.data).to.have.property('qr_payload');",
+                  "    ",
+                  "    // Store QR session for attendance upload",
+                  "    pm.environment.set('qr_session_id', response.data.qr_session.session_id);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "15. Batch Upload Attendance",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"attendance_records\": [\n    {\n      \"local_id\": \"local_001\",\n      \"lecture_id\": 1,\n      \"qr_session_id\": \"{{qr_session_id}}\",\n      \"recorded_latitude\": 33.3152,\n      \"recorded_longitude\": 44.3661,\n      \"recorded_altitude\": 53.5,\n      \"gps_accuracy\": 3.5,\n      \"check_in_time\": \"{{timestamp}}\",\n      \"location_verified\": true,\n      \"qr_verified\": true,\n      \"face_verified\": true,\n      \"device_info\": {\n        \"device_model\": \"Test Device\",\n        \"os_version\": \"Android 12\"\n      }\n    }\n  ],\n  \"batch_options\": {\n    \"validation_level\": \"normal\",\n    \"conflict_resolution\": \"skip\",\n    \"offline_duration_hours\": 0\n  },\n  \"batch_id\": \"test_batch_001\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/attendance/batch-upload",
+              "host": ["{{base_url}}"],
+              "path": ["api", "attendance", "batch-upload"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Batch upload processed', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    const response = pm.response.json();",
+                  "    pm.expect(response.data).to.have.property('upload_results');",
+                  "    pm.expect(response.data).to.have.property('summary');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "16. Resolve Conflicts",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"conflicts\": [\n    {\n      \"student_id\": \"{{student_id}}\",\n      \"lecture_id\": 1,\n      \"resolution_strategy\": \"merge\",\n      \"local_record\": {\n        \"recorded_latitude\": 33.3152,\n        \"recorded_longitude\": 44.3661,\n        \"check_in_time\": \"{{timestamp}}\",\n        \"location_verified\": true,\n        \"qr_verified\": true,\n        \"face_verified\": true\n      },\n      \"notes\": \"Automatic conflict resolution test\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/attendance/resolve-conflicts",
+              "host": ["{{base_url}}"],
+              "path": ["api", "attendance", "resolve-conflicts"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Conflict resolution attempted', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    const response = pm.response.json();",
+                  "    pm.expect(response.data).to.have.property('results');",
+                  "    pm.expect(response.data).to.have.property('summary');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "17. Sync Status",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/attendance/sync-status?since_date=2023-01-01T00:00:00Z&detailed_analysis=true",
+              "host": ["{{base_url}}"],
+              "path": ["api", "attendance", "sync-status"],
+              "query": [
+                {
+                  "key": "since_date",
+                  "value": "2023-01-01T00:00:00Z"
+                },
+                {
+                  "key": "detailed_analysis",
+                  "value": "true"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Sync status retrieved', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    const response = pm.response.json();",
+                  "    pm.expect(response.data).to.have.property('sync_statistics');",
+                  "    pm.expect(response.data).to.have.property('sync_health');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "📊 Reports APIs (3 endpoints)",
+      "item": [
+        {
+          "name": "18. Attendance Summary Report",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{teacher_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/reports/attendance/summary?start_date=2023-09-01&end_date=2023-12-31&section=A&subject_id=1",
+              "host": ["{{base_url}}"],
+              "path": ["api", "reports", "attendance", "summary"],
+              "query": [
+                {
+                  "key": "start_date",
+                  "value": "2023-09-01"
+                },
+                {
+                  "key": "end_date",
+                  "value": "2023-12-31"
+                },
+                {
+                  "key": "section",
+                  "value": "A"
+                },
+                {
+                  "key": "subject_id",
+                  "value": "1"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Attendance summary generated', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    const response = pm.response.json();",
+                  "    pm.expect(response.data).to.have.property('overall_statistics');",
+                  "    pm.expect(response.data).to.have.property('section_analysis');",
+                  "    pm.expect(response.data).to.have.property('top_performers');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "19. Student Detailed Report",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{teacher_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/reports/student/{{student_id}}?start_date=2023-09-01&end_date=2023-12-31",
+              "host": ["{{base_url}}"],
+              "path": ["api", "reports", "student", "{{student_id}}"],
+              "query": [
+                {
+                  "key": "start_date",
+                  "value": "2023-09-01"
+                },
+                {
+                  "key": "end_date",
+                  "value": "2023-12-31"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Student report generated', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    const response = pm.response.json();",
+                  "    pm.expect(response.data).to.have.property('student_info');",
+                  "    pm.expect(response.data).to.have.property('attendance_summary');",
+                  "    pm.expect(response.data).to.have.property('performance_metrics');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "20. Export Report",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{teacher_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"report_type\": \"attendance_summary\",\n  \"export_format\": \"csv\",\n  \"filters\": {\n    \"start_date\": \"2023-09-01\",\n    \"end_date\": \"2023-12-31\",\n    \"section\": \"A\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/reports/export",
+              "host": ["{{base_url}}"],
+              "path": ["api", "reports", "export"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Report export successful', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    // For CSV/Excel exports, content-type will be different",
+                  "    pm.expect(pm.response.headers.get('Content-Type')).to.match(/text\\/csv|application\\/json/);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "🏥 Health Check API (1 endpoint)",
+      "item": [
+        {
+          "name": "System Health Check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/health",
+              "host": ["{{base_url}}"],
+              "path": ["api", "health"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Health check successful', function () {",
+                  "    pm.expect(pm.response.code).to.be.oneOf([200, 503]);",
+                  "    const response = pm.response.json();",
+                  "    pm.expect(response).to.have.property('status');",
+                  "    pm.expect(response).to.have.property('services');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

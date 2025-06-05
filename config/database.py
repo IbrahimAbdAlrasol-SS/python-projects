@@ -6,7 +6,12 @@ import os
 from flask import Flask
 from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
-from flask_redis import FlaskRedis
+try:
+    from flask_redis import FlaskRedis
+    redis_available = True
+except ImportError:
+    redis_available = False
+    FlaskRedis = None
 from sqlalchemy import text
 from dotenv import load_dotenv
 
@@ -14,7 +19,10 @@ load_dotenv()
 
 db = SQLAlchemy()
 migrate = Migrate()
-redis_client = FlaskRedis()
+if redis_available:
+    redis_client = FlaskRedis()
+else:
+    redis_client = None
 
 class DatabaseConfig:
     """Database configuration class"""
@@ -42,10 +50,14 @@ class DatabaseConfig:
         migrate.init_app(app, db)
         
         # Initialize Redis if available
-        try:
-            redis_client.init_app(app)
-        except Exception as e:
-            print(f"⚠️ Redis not available: {e}")
+        if redis_client is not None:
+            try:
+                redis_client.init_app(app)
+                print("✅ Redis initialized successfully")
+            except Exception as e:
+                print(f"⚠️ Redis not available: {e}")
+        else:
+            print("⚠️ Redis package not available - running without cache")
         
         # Create storage directories
         import pathlib
