@@ -55,32 +55,17 @@ def create_app():
     # 2. Setup security (includes rate limiting)
     init_security(app)
     
-    # Remove these lines (60-68):
-    # limiter = Limiter(
-    #     app,
-    #     key_func=get_remote_address,
-    #     default_limits=["1000 per hour", "100 per minute"],
-    #     storage_uri="redis://localhost:6379"
-    # )
-    # app.limiter = limiter
+    # 3. Setup Swagger documentation
+    try:
+        from swagger_docs import setup_swagger_docs, setup_swagger_error_handlers
+        api = setup_swagger_docs(app)
+        setup_swagger_error_handlers(api)
+        print("✅ Swagger documentation enabled at /docs")
+    except Exception as e:
+        print(f"⚠️ Swagger setup failed: {e}")
     
-    # ... existing code ...
-    # 5. Configure logging
+    # 4. Configure logging
     setup_logging(app)
-    
-    # 6. Request/Response middleware
-    setup_middleware(app)
-    
-    # 7. Register all API blueprints
-    register_blueprints(app)
-    
-    # 8. Register error handlers
-    register_error_handlers(app)
-    
-    # 9. Setup application context
-    setup_app_context(app)
-    
-    return app
 
 def setup_logging(app):
     """Configure comprehensive logging"""

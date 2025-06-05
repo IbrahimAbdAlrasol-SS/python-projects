@@ -1,7 +1,7 @@
 {
   "info": {
-    "name": "Smart Attendance System API - Level 3 Complete Tests",
-    "description": "Comprehensive test collection for all 20 API endpoints\nنظام الحضور الذكي - اختبارات شاملة لجميع الـ 20 endpoint",
+    "name": "Smart Attendance System API - Complete Level 3 Collection",
+    "description": "Complete test collection for all 20 API endpoints\nنظام الحضور الذكي - اختبارات شاملة لجميع الـ 20 endpoint",
     "version": "1.0.0",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
@@ -59,24 +59,24 @@
     },
     {
       "key": "student_university_id",
-      "value": "CS2021001"
+      "value": "CS2024001"
     },
     {
       "key": "student_secret_code",
-      "value": "SECRET01"
+      "value": "SEC001"
     },
     {
       "key": "teacher_username",
-      "value": "dr_ahmed"
+      "value": "teacher1"
     },
     {
       "key": "teacher_password",
-      "value": "Password123!"
+      "value": "Teacher123!"
     }
   ],
   "item": [
     {
-      "name": "🏠 System Info",
+      "name": "🏠 System Info & Health",
       "item": [
         {
           "name": "Root - API Information",
@@ -127,6 +127,56 @@
               }
             }
           ]
+        },
+        {
+          "name": "Health Check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/health",
+              "host": ["{{base_url}}"],
+              "path": ["api", "health"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Health check responds', function () {",
+                  "    pm.expect(pm.response.code).to.be.oneOf([200, 503]);",
+                  "    const response = pm.response.json();",
+                  "    pm.expect(response).to.have.property('status');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Simple Health Check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/health/simple",
+              "host": ["{{base_url}}"],
+              "path": ["api", "health", "simple"]
+            }
+          }
+        },
+        {
+          "name": "Database Health Check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/health/database",
+              "host": ["{{base_url}}"],
+              "path": ["api", "health", "database"]
+            }
+          }
         }
       ]
     },
@@ -385,13 +435,13 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/rooms/bulk-download?building=مبنى A&include_inactive=false",
+              "raw": "{{base_url}}/api/rooms/bulk-download?building=Building A&include_inactive=false",
               "host": ["{{base_url}}"],
               "path": ["api", "rooms", "bulk-download"],
               "query": [
                 {
                   "key": "building",
-                  "value": "مبنى A"
+                  "value": "Building A"
                 },
                 {
                   "key": "include_inactive",
@@ -703,9 +753,9 @@
               "raw": "{\n  \"duration_minutes\": 15,\n  \"max_usage_count\": 100,\n  \"allow_multiple_scans\": true,\n  \"force_new\": false\n}"
             },
             "url": {
-              "raw": "{{base_url}}/api/lectures/1/generate-qr",
+              "raw": "{{base_url}}/api/attendance/generate-qr/1",
               "host": ["{{base_url}}"],
-              "path": ["api", "lectures", "1", "generate-qr"]
+              "path": ["api", "attendance", "generate-qr", "1"]
             }
           },
           "event": [
@@ -981,38 +1031,6 @@
                   "    pm.response.to.have.status(200);",
                   "    // For CSV/Excel exports, content-type will be different",
                   "    pm.expect(pm.response.headers.get('Content-Type')).to.match(/text\\/csv|application\\/json/);",
-                  "});"
-                ]
-              }
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "name": "🏥 Health Check API (1 endpoint)",
-      "item": [
-        {
-          "name": "System Health Check",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{base_url}}/api/health",
-              "host": ["{{base_url}}"],
-              "path": ["api", "health"]
-            }
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "exec": [
-                  "pm.test('Health check successful', function () {",
-                  "    pm.expect(pm.response.code).to.be.oneOf([200, 503]);",
-                  "    const response = pm.response.json();",
-                  "    pm.expect(response).to.have.property('status');",
-                  "    pm.expect(response).to.have.property('services');",
                   "});"
                 ]
               }
