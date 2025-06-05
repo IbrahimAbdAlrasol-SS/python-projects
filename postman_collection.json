@@ -22,7 +22,7 @@
         "type": "text/javascript",
         "exec": [
           "// Set base URL",
-          "pm.environment.set('base_url', 'http://localhost:5000');",
+          "pm.environment.set('base_url', 'http://localhost:5001');",
           "",
           "// Add request timestamp",
           "pm.environment.set('timestamp', new Date().toISOString());"
@@ -36,7 +36,7 @@
         "exec": [
           "// Global test for all requests",
           "pm.test('Response time is acceptable', function () {",
-          "    pm.expect(pm.response.responseTime).to.be.below(5000);",
+          "    pm.expect(pm.response.responseTime).to.be.below(5001);",
           "});",
           "",
           "pm.test('Response has required structure', function () {",
@@ -51,7 +51,7 @@
   "variable": [
     {
       "key": "base_url",
-      "value": "http://localhost:5000"
+      "value": "http://localhost:5001"
     },
     {
       "key": "access_token",

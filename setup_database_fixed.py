@@ -452,9 +452,9 @@ def main():
         print("\n🚀 Next steps:")
         print("1. Run: python app.py")
         print("2. Or run: python run_level3.py")
-        print("3. Open: http://localhost:5000")
+        print("3. Open: http://localhost:5001")
         print("4. Test APIs with: python test_all_apis.py")
-        print("5. Check Swagger docs: http://localhost:5000/docs")
+        print("5. Check Swagger docs: http://localhost:5001/docs")
     else:
         print("\n❌ Setup completed with issues")
         print("\n🔧 Manual steps to try:")

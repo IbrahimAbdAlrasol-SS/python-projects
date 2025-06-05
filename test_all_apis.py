@@ -11,7 +11,7 @@ from datetime import datetime
 import sys
 
 class APITester:
-    def __init__(self, base_url='http://localhost:5000'):
+    def __init__(self, base_url='http://localhost:5001'):
         self.base_url = base_url
         self.access_token = None
         self.teacher_token = None
@@ -534,13 +534,13 @@ def main():
     
     # Check if server is running
     try:
-        response = requests.get('http://localhost:5000/', timeout=5)
+        response = requests.get('http://localhost:5001/', timeout=5)
         if response.status_code != 200:
             print("❌ Server is not responding correctly")
             print("Please start the server with: python run_level3.py")
             sys.exit(1)
     except requests.exceptions.ConnectionError:
-        print("❌ Cannot connect to server at http://localhost:5000")
+        print("❌ Cannot connect to server at http://localhost:5001")
         print("Please start the server with: python run_level3.py")
         sys.exit(1)
     

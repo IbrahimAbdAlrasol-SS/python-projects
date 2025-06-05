@@ -241,15 +241,15 @@ if __name__ == '__main__':
     print("=" * 50)
     print("🔑 Admin Login: admin / Admin123!")
     print("📍 Available endpoints:")
-    print("   http://localhost:5000/ - Main page")
-    print("   http://localhost:5000/setup - Setup system")
-    print("   http://localhost:5000/test - Test system")
-    print("   http://localhost:5000/users - List users")
+    print("   http://localhost:5001/ - Main page")
+    print("   http://localhost:5001/setup - Setup system")
+    print("   http://localhost:5001/test - Test system")
+    print("   http://localhost:5001/users - List users")
     print("")
     print("🚀 Starting server...")
     print("=" * 50)
     
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    app.run(debug=True, host='0.0.0.0', port=5001)
 '''
     
     with open('working_app.py', 'w', encoding='utf-8') as f:
@@ -268,7 +268,7 @@ def main():
         print("")
         print("✅ ALL DONE!")
         print("🚀 Now run: python working_app.py")
-        print("🌐 Then visit: http://localhost:5000/setup")
+        print("🌐 Then visit: http://localhost:5001/setup")
         
     except Exception as e:
         print(f"❌ Error: {e}")

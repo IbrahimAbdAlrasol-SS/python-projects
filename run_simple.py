@@ -209,10 +209,10 @@ def main():
         
         print("\n🌐 Server Information:")
         print("=" * 60)
-        print("📍 URL: http://localhost:5000")
-        print("🏥 Health: http://localhost:5000/health")
-        print("ℹ️ Info: http://localhost:5000/info")
-        print("👥 Users: http://localhost:5000/users")
+        print("📍 URL: http://localhost:5001")
+        print("🏥 Health: http://localhost:5001/health")
+        print("ℹ️ Info: http://localhost:5001/info")
+        print("👥 Users: http://localhost:5001/users")
         print("")
         print("🧪 Test Credentials:")
         print("   Admin: admin / admin123")
@@ -223,7 +223,7 @@ def main():
         
         app.run(
             host='0.0.0.0',
-            port=5000,
+            port=5001,
             debug=True
         )
         

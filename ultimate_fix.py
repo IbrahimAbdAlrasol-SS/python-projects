@@ -336,7 +336,7 @@ def main():
             print("")
             print("✅ ALL PROBLEMS SOLVED!")
             print("🚀 Run: python app.py to start the application")
-            print("🌐 Then visit: http://localhost:5000/test")
+            print("🌐 Then visit: http://localhost:5001/test")
         else:
             print("")
             print("❌ SOME ISSUES REMAIN")

@@ -609,11 +609,11 @@ def main():
         # Run development server
         print("\n🌐 Starting Level 3 Complete Server...")
         print("=" * 60)
-        print("📍 Server URL: http://localhost:5000")
-        print("📚 Swagger Documentation: http://localhost:5000/docs")
-        print("🏥 Health Check: http://localhost:5000/api/health")
-        print("ℹ️  API Info: http://localhost:5000/api/info")
-        print("📊 API Status: http://localhost:5000/api/status")
+        print("📍 Server URL: http://localhost:5001")
+        print("📚 Swagger Documentation: http://localhost:5001/docs")
+        print("🏥 Health Check: http://localhost:5001/api/health")
+        print("ℹ️  API Info: http://localhost:5001/api/info")
+        print("📊 API Status: http://localhost:5001/api/status")
         print("")
         print("🧪 Testing:")
         print("   • Import Postman collection for all 20 endpoints")
@@ -625,7 +625,7 @@ def main():
         
         app.run(
             host='0.0.0.0',
-            port=5000,
+            port=5001,
             debug=True,
             use_reloader=False  # Avoid reloader issues
         )

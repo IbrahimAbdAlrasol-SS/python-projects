@@ -31,7 +31,7 @@ class SystemDiagnostic:
     """System diagnostic and validation tool"""
     
     def __init__(self):
-        self.base_url = "http://localhost:5000"
+        self.base_url = "http://localhost:5001"
         self.results = {
             'total_tests': 0,
             'passed_tests': 0,

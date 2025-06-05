@@ -99,11 +99,11 @@ if __name__ == '__main__':
     if app:
         print("✅ Test app created successfully")
         print("📍 Available endpoints:")
-        print("   http://localhost:5000/ - Main page")
-        print("   http://localhost:5000/test - System test")
-        print("   http://localhost:5000/health - Health check")
+        print("   http://localhost:5001/ - Main page")
+        print("   http://localhost:5001/test - System test")
+        print("   http://localhost:5001/health - Health check")
         print("")
         print("🚀 Starting server...")
-        app.run(debug=True, host='0.0.0.0', port=5000)
+        app.run(debug=True, host='0.0.0.0', port=5001)
     else:
         print("❌ Failed to create test app")
