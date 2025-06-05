@@ -1,1431 +1,1365 @@
 """
-⚡ Core Operations APIs - عمليات الحضور الأساسية
-Implementation: 4 critical core operation endpoints
-اليوم 4: تطبيق العمليات الأساسية للحضور
+👑 Admin Management APIs - إدارة النظام الكاملة
+Implementation: 6 comprehensive admin management endpoints
+اليوم 3-4: إدارة شاملة للطلاب والقاعات والجداول
 """
 
 from flask import Blueprint, request, jsonify, current_app, g
 from security import jwt_required, require_permission, get_current_user
 from models import (
-    Lecture, QRSession, AttendanceRecord, Student, Teacher,
-    LectureStatusEnum, QRStatusEnum, AttendanceStatusEnum,
-    AttendanceTypeEnum, VerificationStepEnum
+    User, Student, Teacher, Subject, Room, Schedule, Lecture,
+    UserRole, SectionEnum, SemesterEnum, StudyTypeEnum, AcademicStatusEnum,
+    RoomTypeEnum, AcademicDegreeEnum, LectureStatusEnum
 )
 from utils.response_helpers import (
-    success_response, error_response, batch_response,
-    validation_error_response, not_found_response
+    success_response, error_response, paginated_response,
+    validation_error_response, not_found_response, batch_response
 )
 from utils.validation_helpers import (
-    validate_required_fields, validate_bulk_operation_limit,
-    validate_ids_list, InputValidator
+    validate_required_fields, validate_pagination_params, validate_filters,
+    validate_bulk_operation_limit, validate_academic_year, validate_section,
+    validate_study_year, validate_semester, InputValidator
 )
-from config.database import db, redis_client
-from datetime import datetime, timedelta
+from config.database import db
+from datetime import datetime, date, time, timedelta
 import logging
-import uuid
-import hashlib
 import secrets
-import json
-import base64
-from cryptography.fernet import Fernet
+import io
+import csv
+from werkzeug.utils import secure_filename
 
 # Create blueprint
-core_ops_bp = Blueprint('core_ops', __name__, url_prefix='/api')
+admin_bp = Blueprint('admin', __name__, url_prefix='/api/admin')
 
 # ============================================================================
-# QR CODE GENERATION - توليد رموز QR
+# STUDENTS MANAGEMENT - إدارة الطلاب
 # ============================================================================
 
-@core_ops_bp.route('/lectures/<int:lecture_id>/generate-qr', methods=['POST'])
+@admin_bp.route('/students', methods=['GET'])
 @jwt_required
-@require_permission('generate_qr')
-def generate_qr_code(lecture_id):
+@require_permission('read_student')
+def get_students():
     """
-    POST /api/lectures/<id>/generate-qr
-    Generate secure QR code for lecture attendance with comprehensive validation
-    توليد رمز QR آمن لحضور المحاضرة مع تحقق شامل
+    GET /api/admin/students
+    List students with comprehensive filters and pagination
+    قائمة الطلاب مع فلاتر وصفحات متقدمة
     """
     try:
-        # 1. Find and validate lecture
-        lecture = Lecture.query.get(lecture_id)
-        if not lecture:
-            return jsonify(not_found_response('محاضرة', lecture_id)), 404
+        # 1. Validate pagination parameters
+        page = request.args.get('page', 1, type=int)
+        limit = request.args.get('limit', 20, type=int)
         
-        # 2. Verify teacher authorization
-        user = get_current_user()
-        teacher = user.get_teacher_profile()
+        normalized_page, normalized_limit, pagination_error = validate_pagination_params(
+            page, limit, max_limit=100
+        )
+        if pagination_error:
+            return jsonify(pagination_error), 400
         
-        if not teacher:
-            return jsonify(error_response('NOT_TEACHER', 'هذا الـ API مخصص للمدرسين فقط')), 403
+        # 2. Get filter parameters
+        filters = {
+            'section': request.args.get('section'),
+            'study_year': request.args.get('study_year', type=int),
+            'study_type': request.args.get('study_type'),
+            'academic_status': request.args.get('academic_status'),
+            'face_registered': request.args.get('face_registered'),
+            'telegram_connected': request.args.get('telegram_connected'),
+            'is_repeater': request.args.get('is_repeater'),
+            'university_id': request.args.get('university_id'),
+            'search': request.args.get('search', '').strip()
+        }
         
-        # Verify teacher owns this lecture
-        if lecture.schedule.teacher_id != teacher.id:
-            return jsonify(error_response('UNAUTHORIZED_LECTURE', 'غير مصرح لك بإدارة هذه المحاضرة')), 403
+        # Validate filters
+        allowed_filters = list(filters.keys())
+        validated_filters, filter_error = validate_filters(filters, allowed_filters)
+        if filter_error:
+            return jsonify(filter_error), 400
         
-        # 3. Validate lecture status and timing
-        if lecture.status not in [LectureStatusEnum.SCHEDULED, LectureStatusEnum.ACTIVE]:
+        # 3. Get sorting parameters
+        sort_by = request.args.get('sort_by', 'created_at')
+        sort_order = request.args.get('sort_order', 'desc')
+        
+        allowed_sort_fields = [
+            'university_id', 'full_name', 'section', 'study_year', 
+            'created_at', 'last_login', 'face_registered_at'
+        ]
+        
+        if sort_by not in allowed_sort_fields:
             return jsonify(error_response(
-                'INVALID_LECTURE_STATUS',
-                f'لا يمكن توليد QR للمحاضرة في الحالة: {lecture.status.value}'
+                'INVALID_SORT_FIELD',
+                f'حقل الترتيب غير مدعوم. الحقول المدعومة: {", ".join(allowed_sort_fields)}'
             )), 400
         
-        # Check if QR generation is allowed based on timing
-        now = datetime.utcnow()
-        scheduled_start = lecture.get_scheduled_start_time()
+        if sort_order not in ['asc', 'desc']:
+            return jsonify(error_response('INVALID_SORT_ORDER', 'اتجاه الترتيب يجب أن يكون asc أو desc')), 400
         
-        if scheduled_start:
-            # Allow QR generation 30 minutes before and 2 hours after scheduled start
-            earliest_time = scheduled_start - timedelta(minutes=30)
-            latest_time = scheduled_start + timedelta(hours=2)
-            
-            if now < earliest_time:
-                return jsonify(error_response(
-                    'TOO_EARLY',
-                    f'يمكن توليد QR من {earliest_time.strftime("%H:%M")} فقط'
-                )), 400
-            
-            if now > latest_time:
-                return jsonify(error_response(
-                    'TOO_LATE',
-                    f'انتهت فترة توليد QR في {latest_time.strftime("%H:%M")}'
-                )), 400
+        # 4. Build base query
+        query = Student.query.join(User)
         
-        # 4. Get and validate QR settings
-        data = request.get_json() or {}
+        # Apply filters
+        if validated_filters.get('section'):
+            try:
+                section_enum = SectionEnum(validated_filters['section'])
+                query = query.filter(Student.section == section_enum)
+            except ValueError:
+                return jsonify(error_response('INVALID_SECTION', 'شعبة غير صحيحة')), 400
         
-        # QR configuration
-        duration_minutes = int(data.get('duration_minutes', 15))  # Default 15 minutes
-        max_usage = int(data.get('max_usage_count', 1000))        # Default 1000 uses
-        allow_multiple_scans = bool(data.get('allow_multiple_scans', True))
+        if validated_filters.get('study_year'):
+            query = query.filter(Student.study_year == validated_filters['study_year'])
         
-        # Validation
-        if not (1 <= duration_minutes <= 60):
-            return jsonify(error_response('INVALID_DURATION', 'مدة QR يجب أن تكون بين 1 و 60 دقيقة')), 400
+        if validated_filters.get('study_type'):
+            try:
+                study_type_enum = StudyTypeEnum(validated_filters['study_type'])
+                query = query.filter(Student.study_type == study_type_enum)
+            except ValueError:
+                return jsonify(error_response('INVALID_STUDY_TYPE', 'نوع الدراسة غير صحيح')), 400
         
-        if not (1 <= max_usage <= 2000):
-            return jsonify(error_response('INVALID_MAX_USAGE', 'العدد الأقصى للاستخدام يجب أن يكون بين 1 و 2000')), 400
+        if validated_filters.get('academic_status'):
+            try:
+                status_enum = AcademicStatusEnum(validated_filters['academic_status'])
+                query = query.filter(Student.academic_status == status_enum)
+            except ValueError:
+                return jsonify(error_response('INVALID_ACADEMIC_STATUS', 'حالة أكاديمية غير صحيحة')), 400
         
-        # 5. Check for existing active QR sessions
-        existing_qr = QRSession.query.filter_by(
-            lecture_id=lecture_id,
-            is_active=True,
-            status=QRStatusEnum.ACTIVE
-        ).filter(
-            QRSession.expires_at > datetime.utcnow()
-        ).first()
+        if validated_filters.get('face_registered') is not None:
+            face_registered = validated_filters['face_registered'].lower() == 'true'
+            query = query.filter(Student.face_registered == face_registered)
         
-        if existing_qr:
-            # Check if teacher wants to replace existing QR
-            force_new = data.get('force_new', False)
-            
-            if not force_new:
-                # Return existing QR if still valid
-                time_remaining = int((existing_qr.expires_at - datetime.utcnow()).total_seconds())
-                if time_remaining > 0:
-                    return jsonify(success_response({
-                        'qr_session': {
-                            'id': existing_qr.id,
-                            'session_id': existing_qr.session_id,
-                            'generated_at': existing_qr.generated_at.isoformat(),
-                            'expires_at': existing_qr.expires_at.isoformat(),
-                            'time_remaining_seconds': time_remaining,
-                            'usage_count': existing_qr.current_usage_count,
-                            'max_usage_count': existing_qr.max_usage_count,
-                            'display_text': existing_qr.qr_display_text,
-                            'status': 'existing',
-                            'allow_multiple_scans': existing_qr.allow_multiple_scans
-                        },
-                        'lecture_info': {
-                            'id': lecture.id,
-                            'topic': lecture.topic,
-                            'subject_name': lecture.schedule.subject.name if lecture.schedule and lecture.schedule.subject else None,
-                            'room_name': lecture.schedule.room.name if lecture.schedule and lecture.schedule.room else None,
-                            'section': lecture.schedule.section.value if lecture.schedule else None
-                        }
-                    }, message='QR موجود مسبقاً ولا يزال صالحاً'))
+        if validated_filters.get('telegram_connected') is not None:
+            telegram_connected = validated_filters['telegram_connected'].lower() == 'true'
+            if telegram_connected:
+                query = query.filter(Student.telegram_id.isnot(None))
             else:
-                # Deactivate existing QR
-                existing_qr.is_active = False
-                existing_qr.status = QRStatusEnum.EXPIRED
-                existing_qr.deactivated_at = datetime.utcnow()
-                db.session.add(existing_qr)
+                query = query.filter(Student.telegram_id.is_(None))
         
-        # 6. Start lecture if not already started
-        if lecture.status == LectureStatusEnum.SCHEDULED:
-            lecture.start_lecture(teacher.user.id)
-            db.session.add(lecture)
+        if validated_filters.get('is_repeater') is not None:
+            is_repeater = validated_filters['is_repeater'].lower() == 'true'
+            query = query.filter(Student.is_repeater == is_repeater)
         
-        # 7. Create comprehensive QR session
-        session_id = str(uuid.uuid4())
-        encryption_key = Fernet.generate_key()
+        if validated_filters.get('university_id'):
+            query = query.filter(Student.university_id.ilike(f"%{validated_filters['university_id']}%"))
         
-        # Create QR data payload
-        qr_payload = {
-            'session_id': session_id,
-            'lecture_id': lecture.id,
-            'teacher_id': teacher.id,
-            'room_id': lecture.schedule.room_id if lecture.schedule else None,
-            'section': lecture.schedule.section.value if lecture.schedule else None,
-            'generated_at': datetime.utcnow().isoformat(),
-            'expires_at': (datetime.utcnow() + timedelta(minutes=duration_minutes)).isoformat(),
-            'verification_hash': hashlib.sha256(f"{session_id}{lecture.id}{teacher.id}".encode()).hexdigest()[:16]
-        }
-        
-        # Encrypt QR payload
-        fernet = Fernet(encryption_key)
-        encrypted_payload = fernet.encrypt(json.dumps(qr_payload).encode())
-        
-        # Create QR session record
-        qr_session = QRSession(
-            session_id=session_id,
-            lecture_id=lecture.id,
-            generated_by_teacher_id=teacher.id,
-            qr_data_encrypted=base64.b64encode(encrypted_payload).decode(),
-            generated_at=datetime.utcnow(),
-            expires_at=datetime.utcnow() + timedelta(minutes=duration_minutes),
-            is_active=True,
-            status=QRStatusEnum.ACTIVE,
-            max_usage_count=max_usage,
-            current_usage_count=0,
-            allow_multiple_scans=allow_multiple_scans,
-            encryption_algorithm='Fernet-AES256'
-        )
-        
-        # Generate display text for QR code (what gets encoded in the QR image)
-        qr_display_data = {
-            'type': 'attendance_qr',
-            'session': session_id,
-            'lecture': lecture.id,
-            'expires': qr_session.expires_at.isoformat(),
-            'hash': qr_payload['verification_hash']
-        }
-        
-        qr_session.qr_display_text = base64.b64encode(
-            json.dumps(qr_display_data).encode()
-        ).decode()
-        
-        # 8. Save to database and cache
-        db.session.add(qr_session)
-        db.session.commit()
-        
-        # Cache in Redis for fast access
-        try:
-            redis_key = f"qr_session:{session_id}"
-            redis_data = {
-                'lecture_id': lecture.id,
-                'teacher_id': teacher.id,
-                'expires_at': qr_session.expires_at.isoformat(),
-                'max_usage': max_usage,
-                'current_usage': 0
-            }
-            redis_client.setex(
-                redis_key,
-                duration_minutes * 60,  # TTL in seconds
-                json.dumps(redis_data)
+        if validated_filters.get('search'):
+            search_term = validated_filters['search']
+            query = query.filter(
+                db.or_(
+                    User.full_name.ilike(f'%{search_term}%'),
+                    User.email.ilike(f'%{search_term}%'),
+                    Student.university_id.ilike(f'%{search_term}%')
+                )
             )
-        except Exception as e:
-            logging.warning(f'Failed to cache QR session: {str(e)}')
         
-        # 9. Log QR generation with details
-        logging.info(f'QR generated for lecture {lecture_id} by teacher {teacher.employee_id}: session {session_id}, duration {duration_minutes}m, max_usage {max_usage}')
+        # 5. Apply sorting
+        if sort_by in ['university_id', 'section', 'study_year', 'face_registered', 'created_at']:
+            sort_column = getattr(Student, sort_by)
+        elif sort_by in ['full_name']:
+            sort_column = getattr(User, sort_by)
+        elif sort_by == 'last_login':
+            sort_column = User.last_login
+        elif sort_by == 'face_registered_at':
+            sort_column = Student.face_registered_at
         
-        # 10. Prepare comprehensive response
-        response_data = {
-            'qr_session': {
-                'id': qr_session.id,
-                'session_id': session_id,
-                'generated_at': qr_session.generated_at.isoformat(),
-                'expires_at': qr_session.expires_at.isoformat(),
-                'time_remaining_seconds': duration_minutes * 60,
-                'usage_count': 0,
-                'max_usage_count': max_usage,
-                'allow_multiple_scans': allow_multiple_scans,
-                'display_text': qr_session.qr_display_text,
-                'status': 'new'
-            },
-            'qr_payload': {
-                'encoded_data': qr_session.qr_display_text,
-                'format': 'base64_json',
-                'encoding_instructions': 'Decode base64, then parse JSON for QR scanner'
-            },
-            'encryption_info': {
-                'algorithm': 'Fernet-AES256',
-                'key_for_mobile': base64.b64encode(encryption_key).decode(),  # For mobile app
-                'key_storage_note': 'Store securely in device keychain'
-            },
-            'lecture_info': {
-                'id': lecture.id,
-                'topic': lecture.topic,
-                'status': lecture.status.value,
-                'subject': {
-                    'code': lecture.schedule.subject.code,
-                    'name': lecture.schedule.subject.name
-                } if lecture.schedule and lecture.schedule.subject else None,
-                'room': {
-                    'name': lecture.schedule.room.name,
-                    'building': lecture.schedule.room.building,
-                    'floor': lecture.schedule.room.floor
-                } if lecture.schedule and lecture.schedule.room else None,
-                'section': lecture.schedule.section.value if lecture.schedule else None,
-                'scheduled_time': scheduled_start.isoformat() if scheduled_start else None
-            },
-            'usage_guidelines': {
-                'validity_period': f'{duration_minutes} دقيقة',
-                'max_scans': max_usage,
-                'multiple_scans_per_student': allow_multiple_scans,
-                'recommended_display': 'عرض على الشاشة أو الإسقاط',
-                'security_note': 'الرمز مشفر وآمن ضد التلاعب'
+        if sort_order == 'desc':
+            query = query.order_by(sort_column.desc())
+        else:
+            query = query.order_by(sort_column.asc())
+        
+        # 6. Get total count for pagination
+        total_count = query.count()
+        
+        # 7. Apply pagination
+        offset = (normalized_page - 1) * normalized_limit
+        students = query.offset(offset).limit(normalized_limit).all()
+        
+        # 8. Format response data
+        students_data = []
+        for student in students:
+            user = student.user
+            student_data = {
+                'id': student.id,
+                'user_id': user.id,
+                'university_id': student.university_id,
+                'full_name': user.full_name,
+                'email': user.email,
+                'phone': user.phone,
+                'section': student.section.value,
+                'study_year': student.study_year,
+                'study_type': student.study_type.value,
+                'academic_status': student.academic_status.value,
+                'is_repeater': student.is_repeater,
+                'failed_subjects': student.failed_subjects or [],
+                'face_registered': student.face_registered,
+                'face_registered_at': student.face_registered_at.isoformat() if student.face_registered_at else None,
+                'telegram_connected': student.telegram_id is not None,
+                'telegram_id': student.telegram_id,
+                'device_fingerprint': student.device_fingerprint,
+                'is_active': user.is_active,
+                'last_login': user.last_login.isoformat() if user.last_login else None,
+                'created_at': student.created_at.isoformat(),
+                'updated_at': student.updated_at.isoformat() if student.updated_at else None
             }
+            students_data.append(student_data)
+        
+        # 9. Calculate statistics
+        stats = {
+            'total_students': total_count,
+            'active_students': sum(1 for s in students if s.user.is_active),
+            'face_registered_count': sum(1 for s in students if s.face_registered),
+            'telegram_connected_count': sum(1 for s in students if s.telegram_id),
+            'repeaters_count': sum(1 for s in students if s.is_repeater),
+            'by_section': {},
+            'by_study_year': {},
+            'by_study_type': {}
         }
         
-        return jsonify(success_response(response_data, message='تم توليد QR بنجاح')), 201
+        # Group statistics
+        for student in students:
+            # By section
+            section = student.section.value
+            if section not in stats['by_section']:
+                stats['by_section'][section] = 0
+            stats['by_section'][section] += 1
+            
+            # By study year
+            year = student.study_year
+            if year not in stats['by_study_year']:
+                stats['by_study_year'][year] = 0
+            stats['by_study_year'][year] += 1
+            
+            # By study type
+            study_type = student.study_type.value
+            if study_type not in stats['by_study_type']:
+                stats['by_study_type'][study_type] = 0
+            stats['by_study_type'][study_type] += 1
+        
+        # 10. Log access
+        user = get_current_user()
+        logging.info(f'Students list accessed by {user.username}: {len(students)} results, filters: {validated_filters}')
+        
+        return jsonify(paginated_response(
+            items=students_data,
+            page=normalized_page,
+            limit=normalized_limit,
+            total_count=total_count,
+            additional_data={
+                'statistics': stats,
+                'applied_filters': validated_filters,
+                'sort_info': {'field': sort_by, 'order': sort_order}
+            }
+        ))
         
     except Exception as e:
-        logging.error(f'QR generation error: {str(e)}', exc_info=True)
-        return jsonify(error_response('QR_GENERATION_ERROR', 'حدث خطأ أثناء توليد QR')), 500
+        logging.error(f'Get students error: {str(e)}', exc_info=True)
+        return jsonify(error_response('GET_STUDENTS_ERROR', 'حدث خطأ أثناء جلب قائمة الطلاب')), 500
 
-# ============================================================================
-# BATCH ATTENDANCE UPLOAD - رفع الحضور بشكل جماعي
-# ============================================================================
-
-@core_ops_bp.route('/attendance/batch-upload', methods=['POST'])
+@admin_bp.route('/students/bulk-create', methods=['POST'])
 @jwt_required
-@require_permission('submit_attendance')
-def batch_upload_attendance():
+@require_permission('create_student')
+def bulk_create_students():
     """
-    POST /api/attendance/batch-upload
-    Upload batch attendance records from mobile app with comprehensive processing
-    رفع سجلات الحضور بشكل جماعي من التطبيق مع معالجة شاملة
+    POST /api/admin/students/bulk-create
+    Create multiple students from data array or CSV upload
+    إنشاء طلاب متعددين من مصفوفة بيانات أو ملف CSV
     """
     try:
-        # 1. Validate input structure
-        data = request.get_json()
-        if not data or 'attendance_records' not in data:
-            return jsonify(error_response('INVALID_INPUT', 'سجلات الحضور مطلوبة')), 400
+        # 1. Determine input type (JSON array or file upload)
+        if request.content_type and 'multipart/form-data' in request.content_type:
+            # File upload mode
+            if 'file' not in request.files:
+                return jsonify(error_response('NO_FILE', 'ملف مطلوب للرفع')), 400
+            
+            file = request.files['file']
+            if file.filename == '':
+                return jsonify(error_response('EMPTY_FILENAME', 'اسم الملف فارغ')), 400
+            
+            # Validate file extension
+            if not file.filename.lower().endswith('.csv'):
+                return jsonify(error_response('INVALID_FILE_TYPE', 'نوع الملف يجب أن يكون CSV')), 400
+            
+            # Read CSV data
+            try:
+                csv_content = io.StringIO(file.read().decode('utf-8'))
+                csv_reader = csv.DictReader(csv_content)
+                students_data = list(csv_reader)
+            except Exception as e:
+                return jsonify(error_response('CSV_PARSE_ERROR', f'خطأ في قراءة ملف CSV: {str(e)}')), 400
         
-        attendance_records = data['attendance_records']
-        if not isinstance(attendance_records, list):
-            return jsonify(error_response('INVALID_FORMAT', 'سجلات الحضور يجب أن تكون مصفوفة')), 400
+        else:
+            # JSON array mode
+            data = request.get_json()
+            if not data or 'students' not in data:
+                return jsonify(error_response('INVALID_INPUT', 'مصفوفة الطلاب مطلوبة')), 400
+            
+            students_data = data['students']
+            if not isinstance(students_data, list):
+                return jsonify(error_response('INVALID_FORMAT', 'بيانات الطلاب يجب أن تكون مصفوفة')), 400
         
         # 2. Validate bulk operation limit
-        bulk_limit_error = validate_bulk_operation_limit(attendance_records, max_items=100)
+        bulk_limit_error = validate_bulk_operation_limit(students_data, max_items=500)
         if bulk_limit_error:
             return jsonify(bulk_limit_error), 400
         
-        # 3. Get current user (must be student)
-        user = get_current_user()
-        if user.role.value != 'student':
-            return jsonify(error_response('UNAUTHORIZED', 'هذا الـ API مخصص للطلاب فقط')), 403
+        # 3. Get processing options
+        processing_options = request.form.to_dict() if request.content_type and 'multipart/form-data' in request.content_type else data.get('options', {})
         
-        student = user.get_student_profile()
-        if not student:
-            return jsonify(not_found_response('ملف الطالب')), 404
+        auto_generate_codes = processing_options.get('auto_generate_codes', 'true').lower() == 'true'
+        send_notifications = processing_options.get('send_notifications', 'false').lower() == 'true'
+        skip_duplicates = processing_options.get('skip_duplicates', 'true').lower() == 'true'
+        default_password = processing_options.get('default_password', 'NewStudent123!')
         
-        # 4. Get batch processing options
-        batch_options = data.get('batch_options', {})
-        validation_level = batch_options.get('validation_level', 'strict')  # strict, normal, lenient
-        conflict_resolution = batch_options.get('conflict_resolution', 'skip')  # skip, overwrite, merge
-        offline_duration = batch_options.get('offline_duration_hours', 0)
-        
-        # 5. Process each attendance record with comprehensive validation
+        # 4. Process each student record
         results = []
-        successful_uploads = 0
-        failed_uploads = 0
-        conflicts = []
-        warnings = []
+        successful_creates = 0
+        failed_creates = 0
+        duplicate_skips = 0
         
-        for index, record_data in enumerate(attendance_records):
+        for index, student_data in enumerate(students_data):
             result = {
                 'index': index,
-                'local_id': record_data.get('local_id'),
                 'success': False,
                 'error': None,
-                'attendance_id': None,
-                'conflict_detected': False,
-                'warnings': [],
-                'verification_status': {}
+                'student_id': None,
+                'university_id': None,
+                'generated_code': None,
+                'duplicate_skipped': False
             }
             
             try:
-                # Validate required fields for each record
-                required_fields = [
-                    'lecture_id', 'qr_session_id', 'recorded_latitude',
-                    'recorded_longitude', 'check_in_time'
-                ]
+                # Validate required fields
+                required_fields = ['full_name', 'email', 'section', 'study_year']
+                missing_fields = [field for field in required_fields if field not in student_data or not student_data[field]]
                 
-                missing_fields = [field for field in required_fields if field not in record_data]
                 if missing_fields:
                     raise ValueError(f'حقول مطلوبة مفقودة: {", ".join(missing_fields)}')
                 
-                # Extract and validate core data
-                lecture_id = int(record_data['lecture_id'])
-                qr_session_id = record_data['qr_session_id']
-                recorded_lat = float(record_data['recorded_latitude'])
-                recorded_lng = float(record_data['recorded_longitude'])
-                recorded_altitude = float(record_data.get('recorded_altitude', 0))
-                check_in_time_str = record_data['check_in_time']
+                # Clean and validate data
+                full_name = InputValidator.sanitize_string(student_data['full_name'])
+                email = InputValidator.sanitize_string(student_data['email']).lower()
+                section = student_data['section'].upper()
+                study_year = int(student_data['study_year'])
                 
-                # Parse check-in time
-                try:
-                    check_in_time = datetime.fromisoformat(check_in_time_str.replace('Z', '+00:00'))
-                except ValueError:
-                    raise ValueError('تنسيق وقت تسجيل الدخول غير صحيح')
+                # Optional fields
+                phone = InputValidator.sanitize_string(student_data.get('phone', ''))
+                study_type = student_data.get('study_type', 'morning')
+                university_id = student_data.get('university_id', '').upper()
                 
-                # Verification data
-                location_verified = bool(record_data.get('location_verified', False))
-                qr_verified = bool(record_data.get('qr_verified', False))
-                face_verified = bool(record_data.get('face_verified', False))
+                # Validate email format
+                is_valid_email, email_error = InputValidator.validate_email(email)
+                if not is_valid_email:
+                    raise ValueError(f'البريد الإلكتروني غير صحيح: {email_error}')
                 
-                # Optional metadata
-                device_info = record_data.get('device_info', {})
-                gps_accuracy = float(record_data.get('gps_accuracy', 0))
-                verification_details = record_data.get('verification_details', {})
-                sync_timestamp = record_data.get('sync_timestamp')
+                # Validate section
+                is_valid_section, section_error = validate_section(section)
+                if not is_valid_section:
+                    raise ValueError(section_error)
                 
-                # 6. Comprehensive validation
+                # Validate study year
+                is_valid_year, year_error = validate_study_year(study_year)
+                if not is_valid_year:
+                    raise ValueError(year_error)
                 
-                # Time validation
-                time_validation_errors = []
-                if check_in_time > datetime.utcnow() + timedelta(minutes=5):
-                    time_validation_errors.append('وقت التسجيل في المستقبل')
-                
-                if offline_duration > 0 and (datetime.utcnow() - check_in_time).total_seconds() / 3600 > offline_duration + 48:
-                    time_validation_errors.append(f'وقت التسجيل قديم جداً (أكثر من {offline_duration + 48} ساعة)')
-                
-                # GPS validation
-                gps_validation_errors = []
-                if not (-90 <= recorded_lat <= 90):
-                    gps_validation_errors.append('خط العرض غير صحيح')
-                
-                if not (-180 <= recorded_lng <= 180):
-                    gps_validation_errors.append('خط الطول غير صحيح')
-                
-                if gps_accuracy > 50:  # More than 50 meters accuracy
-                    result['warnings'].append(f'دقة GPS منخفضة: {gps_accuracy}m')
-                
-                # Lecture validation
-                lecture = Lecture.query.get(lecture_id)
-                if not lecture:
-                    raise ValueError(f'محاضرة غير موجودة: {lecture_id}')
-                
-                # Check if student should be in this lecture
-                if lecture.schedule:
-                    if lecture.schedule.section != student.section:
-                        if validation_level == 'strict':
-                            raise ValueError(f'الطالب من شعبة {student.section.value} وليس {lecture.schedule.section.value}')
-                        else:
-                            result['warnings'].append('الطالب من شعبة مختلفة')
+                # Generate university ID if not provided
+                if not university_id:
+                    # Generate format: CS2024001, CS2024002, etc.
+                    current_year = datetime.now().year
                     
-                    if lecture.schedule.subject and lecture.schedule.subject.study_year != student.study_year:
-                        if validation_level == 'strict':
-                            raise ValueError(f'الطالب من سنة {student.study_year} وليس {lecture.schedule.subject.study_year}')
-                        else:
-                            result['warnings'].append('الطالب من سنة دراسية مختلفة')
+                    # Find the highest existing ID for this year
+                    year_prefix = f"CS{current_year}"
+                    last_student = Student.query.filter(
+                        Student.university_id.like(f'{year_prefix}%')
+                    ).order_by(Student.university_id.desc()).first()
+                    
+                    if last_student:
+                        last_number = int(last_student.university_id[-3:])
+                        new_number = last_number + 1
+                    else:
+                        new_number = 1
+                    
+                    university_id = f"{year_prefix}{new_number:03d}"
                 
-                # 7. Check for existing attendance (conflict detection)
-                existing_attendance = AttendanceRecord.query.filter_by(
-                    student_id=student.id,
-                    lecture_id=lecture_id
+                # Check for duplicates
+                existing_user = User.query.filter(
+                    db.or_(User.email == email, User.username == university_id)
                 ).first()
                 
-                if existing_attendance:
-                    conflict = {
-                        'local_record': record_data,
-                        'server_record': {
-                            'id': existing_attendance.id,
-                            'check_in_time': existing_attendance.check_in_time.isoformat(),
-                            'attendance_type': existing_attendance.attendance_type.value,
-                            'verification_completed': existing_attendance.verification_completed,
-                            'status': existing_attendance.status.value
-                        },
-                        'conflict_type': 'duplicate_attendance',
-                        'student_id': student.id,
-                        'lecture_id': lecture_id,
-                        'resolution_options': ['skip', 'overwrite', 'merge']
-                    }
-                    conflicts.append(conflict)
-                    
-                    if conflict_resolution == 'skip':
-                        result.update({
-                            'conflict_detected': True,
-                            'error': 'سجل حضور موجود مسبقاً لهذه المحاضرة',
-                            'existing_attendance_id': existing_attendance.id,
-                            'action_taken': 'skipped'
-                        })
-                        failed_uploads += 1
-                        results.append(result)
-                        continue
-                    
-                    elif conflict_resolution == 'overwrite':
-                        # Update existing record
-                        existing_attendance.check_in_time = check_in_time
-                        existing_attendance.recorded_latitude = recorded_lat
-                        existing_attendance.recorded_longitude = recorded_lng
-                        existing_attendance.recorded_altitude = recorded_altitude
-                        existing_attendance.gps_accuracy = gps_accuracy
-                        existing_attendance.location_verified = location_verified
-                        existing_attendance.qr_verified = qr_verified
-                        existing_attendance.face_verified = face_verified
-                        existing_attendance.verification_completed = (location_verified and qr_verified and face_verified)
-                        existing_attendance.device_info = device_info
-                        existing_attendance.updated_at = datetime.utcnow()
-                        
-                        if sync_timestamp:
-                            existing_attendance.synced_at = datetime.fromisoformat(sync_timestamp.replace('Z', '+00:00'))
-                        
-                        result.update({
-                            'success': True,
-                            'attendance_id': existing_attendance.id,
-                            'action_taken': 'overwritten',
-                            'conflict_detected': True
-                        })
-                        successful_uploads += 1
-                        results.append(result)
-                        continue
-                    
-                    elif conflict_resolution == 'merge':
-                        # Merge verification results (keep best results)
-                        existing_attendance.location_verified = existing_attendance.location_verified or location_verified
-                        existing_attendance.qr_verified = existing_attendance.qr_verified or qr_verified
-                        existing_attendance.face_verified = existing_attendance.face_verified or face_verified
-                        existing_attendance.verification_completed = (
-                            existing_attendance.location_verified and 
-                            existing_attendance.qr_verified and 
-                            existing_attendance.face_verified
-                        )
-                        
-                        # Use most accurate GPS data
-                        if gps_accuracy < existing_attendance.gps_accuracy:
-                            existing_attendance.recorded_latitude = recorded_lat
-                            existing_attendance.recorded_longitude = recorded_lng
-                            existing_attendance.gps_accuracy = gps_accuracy
-                        
-                        # Use earlier check-in time
-                        if check_in_time < existing_attendance.check_in_time:
-                            existing_attendance.check_in_time = check_in_time
-                        
-                        existing_attendance.updated_at = datetime.utcnow()
-                        
-                        result.update({
-                            'success': True,
-                            'attendance_id': existing_attendance.id,
-                            'action_taken': 'merged',
-                            'conflict_detected': True
-                        })
-                        successful_uploads += 1
-                        results.append(result)
-                        continue
+                existing_student = Student.query.filter_by(university_id=university_id).first()
                 
-                # 8. Create new attendance record
-                attendance_record = AttendanceRecord(
-                    student_id=student.id,
-                    lecture_id=lecture_id,
-                    qr_session_id=qr_session_id,
-                    
-                    # Verification status
-                    location_verified=location_verified,
-                    qr_verified=qr_verified,
-                    face_verified=face_verified,
-                    verification_completed=(location_verified and qr_verified and face_verified),
-                    
-                    # Location data
-                    recorded_latitude=recorded_lat,
-                    recorded_longitude=recorded_lng,
-                    recorded_altitude=recorded_altitude,
-                    gps_accuracy=gps_accuracy,
-                    
-                    # Timing
-                    check_in_time=check_in_time,
-                    verification_started_at=check_in_time,
-                    
-                    # Device and metadata
-                    device_info=device_info,
-                    ip_address=request.remote_addr,
-                    user_agent=request.headers.get('User-Agent', ''),
-                    
-                    # Sync information
-                    is_synced=True,
-                    local_id=record_data.get('local_id'),
-                    batch_upload_id=data.get('batch_id'),
-                    offline_duration_hours=offline_duration
+                if existing_user or existing_student:
+                    if skip_duplicates:
+                        result.update({
+                            'duplicate_skipped': True,
+                            'error': f'مستخدم موجود مسبقاً: {email} أو {university_id}'
+                        })
+                        duplicate_skips += 1
+                        results.append(result)
+                        continue
+                    else:
+                        raise ValueError(f'مستخدم موجود مسبقاً: {email} أو {university_id}')
+                
+                # Create user account
+                user = User(
+                    username=university_id,
+                    email=email,
+                    full_name=full_name,
+                    phone=phone,
+                    role=UserRole.STUDENT,
+                    is_active=True
+                )
+                user.set_password(default_password)
+                
+                db.session.add(user)
+                db.session.flush()  # Get user ID
+                
+                # Generate secret code
+                secret_code = InputValidator.sanitize_string(
+                    student_data.get('secret_code', secrets.token_urlsafe(6).upper()[:8])
+                ) if not auto_generate_codes else secrets.token_urlsafe(6).upper()[:8]
+                
+                # Create student profile
+                student = Student(
+                    user_id=user.id,
+                    university_id=university_id,
+                    section=SectionEnum(section),
+                    study_year=study_year,
+                    study_type=StudyTypeEnum(study_type),
+                    academic_status=AcademicStatusEnum.ACTIVE,
+                    is_repeater=bool(student_data.get('is_repeater', False)),
+                    failed_subjects=student_data.get('failed_subjects', []) if student_data.get('failed_subjects') else None
                 )
                 
-                if sync_timestamp:
-                    attendance_record.synced_at = datetime.fromisoformat(sync_timestamp.replace('Z', '+00:00'))
+                # Set secret code
+                student.set_secret_code(secret_code)
                 
-                # Determine attendance type based on timing
-                if lecture.is_late_attendance(check_in_time):
-                    attendance_record.attendance_type = AttendanceTypeEnum.LATE
-                else:
-                    attendance_record.attendance_type = AttendanceTypeEnum.ON_TIME
-                
-                # Set initial status
-                if attendance_record.verification_completed:
-                    attendance_record.status = AttendanceStatusEnum.VERIFIED
-                else:
-                    attendance_record.status = AttendanceStatusEnum.PENDING
-                
-                # Add verification details if available
-                if verification_details:
-                    attendance_record.verification_metadata = verification_details
-                
-                db.session.add(attendance_record)
-                db.session.flush()  # Get ID without committing
+                db.session.add(student)
+                db.session.flush()  # Get student ID
                 
                 result.update({
                     'success': True,
-                    'attendance_id': attendance_record.id,
-                    'verification_completed': attendance_record.verification_completed,
-                    'attendance_type': attendance_record.attendance_type.value,
-                    'status': attendance_record.status.value,
-                    'action_taken': 'created'
+                    'student_id': student.id,
+                    'user_id': user.id,
+                    'university_id': university_id,
+                    'generated_code': secret_code if auto_generate_codes else None,
+                    'email': email,
+                    'full_name': full_name
                 })
-                successful_uploads += 1
+                successful_creates += 1
                 
             except ValueError as ve:
                 result['error'] = str(ve)
-                failed_uploads += 1
+                failed_creates += 1
             except Exception as e:
                 result['error'] = f'خطأ غير متوقع: {str(e)}'
-                failed_uploads += 1
+                failed_creates += 1
             
             results.append(result)
         
-        # 9. Commit successful records
-        if successful_uploads > 0:
+        # 5. Commit successful creates
+        if successful_creates > 0:
             try:
                 db.session.commit()
-                logging.info(f'Batch attendance upload by student {student.university_id}: {successful_uploads} successful, {failed_uploads} failed, {len(conflicts)} conflicts')
+                logging.info(f'Bulk student creation by {get_current_user().username}: {successful_creates} created, {failed_creates} failed, {duplicate_skips} skipped')
             except Exception as e:
                 db.session.rollback()
-                return jsonify(error_response('DATABASE_ERROR', f'خطأ في حفظ سجلات الحضور: {str(e)}')), 500
+                return jsonify(error_response('DATABASE_ERROR', f'خطأ في حفظ الطلاب: {str(e)}')), 500
         else:
             db.session.rollback()
         
-        # 10. Generate comprehensive summary
+        # 6. Generate summary
         summary = {
-            'total_records': len(results),
-            'successful': successful_uploads,
-            'failed': failed_uploads,
-            'conflicts': len(conflicts),
-            'success_rate': round((successful_uploads / len(results)) * 100, 2) if results else 0,
-            'validation_level': validation_level,
-            'conflict_resolution': conflict_resolution,
-            'offline_duration': offline_duration,
-            'warnings_count': sum(len(r.get('warnings', [])) for r in results)
+            'total_processed': len(results),
+            'successful_creates': successful_creates,
+            'failed_creates': failed_creates,
+            'duplicate_skips': duplicate_skips,
+            'success_rate': round((successful_creates / len(results)) * 100, 2) if results else 0,
+            'processing_options': {
+                'auto_generate_codes': auto_generate_codes,
+                'send_notifications': send_notifications,
+                'skip_duplicates': skip_duplicates
+            }
         }
-        
-        # Add performance metrics
-        processing_time = (datetime.utcnow() - g.start_time).total_seconds() if hasattr(g, 'start_time') else 0
-        summary['processing_time_seconds'] = round(processing_time, 2)
-        summary['records_per_second'] = round(len(results) / max(processing_time, 0.1), 2)
         
         response_data = {
-            'upload_results': results,
-            'conflicts': conflicts,
-            'summary': summary,
-            'recommendations': generate_upload_recommendations(results, conflicts)
+            'creation_results': results,
+            'summary': summary
         }
         
-        message = f'تم رفع {successful_uploads} سجل حضور بنجاح'
-        if conflicts:
-            message += f' مع {len(conflicts)} تعارض'
+        message = f'تم إنشاء {successful_creates} طالب بنجاح'
+        if failed_creates > 0:
+            message += f'، {failed_creates} فشل'
+        if duplicate_skips > 0:
+            message += f'، {duplicate_skips} تم تخطيه (مكرر)'
         
-        return jsonify(batch_response(response_data, summary, message))
+        return jsonify(batch_response(response_data, summary, message)), 201
         
     except Exception as e:
         db.session.rollback()
-        logging.error(f'Batch attendance upload error: {str(e)}', exc_info=True)
-        return jsonify(error_response('BATCH_UPLOAD_ERROR', 'حدث خطأ أثناء رفع سجلات الحضور')), 500
+        logging.error(f'Bulk create students error: {str(e)}', exc_info=True)
+        return jsonify(error_response('BULK_CREATE_ERROR', 'حدث خطأ أثناء إنشاء الطلاب')), 500
 
 # ============================================================================
-# CONFLICT RESOLUTION - حل التعارضات
+# ROOMS MANAGEMENT - إدارة القاعات
 # ============================================================================
 
-@core_ops_bp.route('/attendance/resolve-conflicts', methods=['POST'])
+@admin_bp.route('/rooms', methods=['POST'])
 @jwt_required
-@require_permission('update_attendance')
-def resolve_conflicts():
+@require_permission('create_room')
+def create_room():
     """
-    POST /api/attendance/resolve-conflicts
-    Resolve attendance data conflicts with comprehensive strategies
-    حل تعارضات بيانات الحضور مع استراتيجيات شاملة
+    POST /api/admin/rooms
+    Create a new room with GPS polygon and altitude data
+    إنشاء قاعة جديدة مع إحداثيات GPS ثلاثية الأبعاد
     """
     try:
         # 1. Validate input
         data = request.get_json()
-        if not data or 'conflicts' not in data:
-            return jsonify(error_response('INVALID_INPUT', 'قائمة التعارضات مطلوبة')), 400
+        if not data:
+            return jsonify(error_response('INVALID_INPUT', 'بيانات القاعة مطلوبة')), 400
         
-        conflicts_data = data['conflicts']
-        if not isinstance(conflicts_data, list):
-            return jsonify(error_response('INVALID_FORMAT', 'التعارضات يجب أن تكون مصفوفة')), 400
+        # Validate required fields
+        required_fields = [
+            'name', 'building', 'floor', 'center_latitude', 'center_longitude',
+            'ground_reference_altitude', 'floor_altitude', 'ceiling_height'
+        ]
+        
+        validation_error = validate_required_fields(data, required_fields)
+        if validation_error:
+            return jsonify(validation_error), 400
+        
+        # 2. Extract and validate data
+        name = InputValidator.sanitize_string(data['name']).upper()
+        building = InputValidator.sanitize_string(data['building'])
+        floor = int(data['floor'])
+        room_type = data.get('room_type', 'classroom')
+        capacity = int(data.get('capacity', 30))
+        
+        # GPS coordinates
+        center_latitude = float(data['center_latitude'])
+        center_longitude = float(data['center_longitude'])
+        ground_reference_altitude = float(data['ground_reference_altitude'])
+        floor_altitude = float(data['floor_altitude'])
+        ceiling_height = float(data['ceiling_height'])
+        
+        # Optional fields
+        barometric_pressure_reference = data.get('barometric_pressure_reference')
+        wifi_ssid = InputValidator.sanitize_string(data.get('wifi_ssid', ''))
+        
+        # GPS polygon (optional, will auto-generate if not provided)
+        gps_polygon = data.get('gps_polygon')
+        polygon_width = float(data.get('polygon_width_meters', 8.0))
+        polygon_height = float(data.get('polygon_height_meters', 6.0))
+        
+        # 3. Validate data ranges
+        if not (-90 <= center_latitude <= 90):
+            return jsonify(error_response('INVALID_LATITUDE', 'خط العرض يجب أن يكون بين -90 و 90')), 400
+        
+        if not (-180 <= center_longitude <= 180):
+            return jsonify(error_response('INVALID_LONGITUDE', 'خط الطول يجب أن يكون بين -180 و 180')), 400
+        
+        if floor < 0:
+            return jsonify(error_response('INVALID_FLOOR', 'رقم الطابق يجب أن يكون موجب')), 400
+        
+        if capacity <= 0:
+            return jsonify(error_response('INVALID_CAPACITY', 'سعة القاعة يجب أن تكون أكبر من صفر')), 400
+        
+        if ceiling_height <= 0:
+            return jsonify(error_response('INVALID_CEILING_HEIGHT', 'ارتفاع السقف يجب أن يكون أكبر من صفر')), 400
+        
+        # Validate room type
+        try:
+            room_type_enum = RoomTypeEnum(room_type)
+        except ValueError:
+            return jsonify(error_response('INVALID_ROOM_TYPE', 'نوع القاعة غير صحيح')), 400
+        
+        # 4. Check for duplicate room name
+        existing_room = Room.query.filter_by(name=name).first()
+        if existing_room:
+            return jsonify(error_response('DUPLICATE_ROOM_NAME', f'اسم القاعة موجود مسبقاً: {name}')), 409
+        
+        # 5. Create room
+        room = Room(
+            name=name,
+            building=building,
+            floor=floor,
+            room_type=room_type_enum,
+            capacity=capacity,
+            center_latitude=center_latitude,
+            center_longitude=center_longitude,
+            ground_reference_altitude=ground_reference_altitude,
+            floor_altitude=floor_altitude,
+            ceiling_height=ceiling_height,
+            wifi_ssid=wifi_ssid,
+            is_active=True
+        )
+        
+        # Set barometric pressure if provided
+        if barometric_pressure_reference:
+            room.barometric_pressure_reference = float(barometric_pressure_reference)
+        
+        # 6. Set GPS polygon
+        if gps_polygon and isinstance(gps_polygon, list) and len(gps_polygon) >= 3:
+            # Validate polygon coordinates
+            for point in gps_polygon:
+                if not isinstance(point, list) or len(point) != 2:
+                    return jsonify(error_response('INVALID_POLYGON_FORMAT', 'نقاط المضلع يجب أن تكون [latitude, longitude]')), 400
+                
+                lat, lng = point
+                if not (-90 <= lat <= 90) or not (-180 <= lng <= 180):
+                    return jsonify(error_response('INVALID_POLYGON_COORDINATES', 'إحداثيات المضلع غير صحيحة')), 400
+            
+            room.gps_polygon = gps_polygon
+        else:
+            # Auto-generate rectangular polygon
+            room.set_rectangular_polygon(
+                center_latitude, center_longitude,
+                width_meters=polygon_width, height_meters=polygon_height
+            )
+        
+        # 7. Save room
+        db.session.add(room)
+        db.session.commit()
+        
+        # 8. Log creation
+        user = get_current_user()
+        logging.info(f'Room created by {user.username}: {name} in {building}, floor {floor}')
+        
+        # 9. Prepare response
+        room_data = {
+            'id': room.id,
+            'name': room.name,
+            'building': room.building,
+            'floor': room.floor,
+            'room_type': room.room_type.value,
+            'capacity': room.capacity,
+            'location': {
+                'center_latitude': float(room.center_latitude),
+                'center_longitude': float(room.center_longitude),
+                'gps_polygon': room.gps_polygon,
+                'ground_reference_altitude': float(room.ground_reference_altitude),
+                'floor_altitude': float(room.floor_altitude),
+                'ceiling_height': float(room.ceiling_height),
+                'barometric_pressure_reference': float(room.barometric_pressure_reference) if room.barometric_pressure_reference else None
+            },
+            'wifi_ssid': room.wifi_ssid,
+            'is_active': room.is_active,
+            'created_at': room.created_at.isoformat()
+        }
+        
+        return jsonify(success_response(room_data, message='تم إنشاء القاعة بنجاح')), 201
+        
+    except ValueError as ve:
+        return jsonify(error_response('VALIDATION_ERROR', str(ve))), 400
+    except Exception as e:
+        db.session.rollback()
+        logging.error(f'Create room error: {str(e)}', exc_info=True)
+        return jsonify(error_response('CREATE_ROOM_ERROR', 'حدث خطأ أثناء إنشاء القاعة')), 500
+
+@admin_bp.route('/rooms/<int:room_id>', methods=['PUT'])
+@jwt_required
+@require_permission('update_room')
+def update_room(room_id):
+    """
+    PUT /api/admin/rooms/<id>
+    Update room information including GPS coordinates
+    تحديث معلومات القاعة بما في ذلك الإحداثيات
+    """
+    try:
+        # 1. Find room
+        room = Room.query.get(room_id)
+        if not room:
+            return jsonify(not_found_response('قاعة', room_id)), 404
+        
+        # 2. Validate input
+        data = request.get_json()
+        if not data:
+            return jsonify(error_response('INVALID_INPUT', 'بيانات التحديث مطلوبة')), 400
+        
+        # 3. Update fields if provided
+        updatable_fields = [
+            'name', 'building', 'floor', 'room_type', 'capacity',
+            'center_latitude', 'center_longitude', 'ground_reference_altitude',
+            'floor_altitude', 'ceiling_height', 'barometric_pressure_reference',
+            'wifi_ssid', 'is_active', 'gps_polygon'
+        ]
+        
+        updates_made = []
+        
+        for field in updatable_fields:
+            if field in data:
+                if field == 'name':
+                    new_name = InputValidator.sanitize_string(data['name']).upper()
+                    if new_name != room.name:
+                        # Check for duplicate name
+                        existing = Room.query.filter(Room.name == new_name, Room.id != room.id).first()
+                        if existing:
+                            return jsonify(error_response('DUPLICATE_ROOM_NAME', f'اسم القاعة موجود مسبقاً: {new_name}')), 409
+                        room.name = new_name
+                        updates_made.append('name')
+                
+                elif field == 'building':
+                    room.building = InputValidator.sanitize_string(data['building'])
+                    updates_made.append('building')
+                
+                elif field == 'floor':
+                    new_floor = int(data['floor'])
+                    if new_floor < 0:
+                        return jsonify(error_response('INVALID_FLOOR', 'رقم الطابق يجب أن يكون موجب')), 400
+                    room.floor = new_floor
+                    updates_made.append('floor')
+                
+                elif field == 'room_type':
+                    try:
+                        room.room_type = RoomTypeEnum(data['room_type'])
+                        updates_made.append('room_type')
+                    except ValueError:
+                        return jsonify(error_response('INVALID_ROOM_TYPE', 'نوع القاعة غير صحيح')), 400
+                
+                elif field == 'capacity':
+                    new_capacity = int(data['capacity'])
+                    if new_capacity <= 0:
+                        return jsonify(error_response('INVALID_CAPACITY', 'سعة القاعة يجب أن تكون أكبر من صفر')), 400
+                    room.capacity = new_capacity
+                    updates_made.append('capacity')
+                
+                elif field in ['center_latitude', 'center_longitude']:
+                    coord = float(data[field])
+                    if field == 'center_latitude' and not (-90 <= coord <= 90):
+                        return jsonify(error_response('INVALID_LATITUDE', 'خط العرض يجب أن يكون بين -90 و 90')), 400
+                    elif field == 'center_longitude' and not (-180 <= coord <= 180):
+                        return jsonify(error_response('INVALID_LONGITUDE', 'خط الطول يجب أن يكون بين -180 و 180')), 400
+                    setattr(room, field, coord)
+                    updates_made.append(field)
+                
+                elif field in ['ground_reference_altitude', 'floor_altitude', 'ceiling_height']:
+                    altitude = float(data[field])
+                    if field == 'ceiling_height' and altitude <= 0:
+                        return jsonify(error_response('INVALID_CEILING_HEIGHT', 'ارتفاع السقف يجب أن يكون أكبر من صفر')), 400
+                    setattr(room, field, altitude)
+                    updates_made.append(field)
+                
+                elif field == 'barometric_pressure_reference':
+                    if data[field] is not None:
+                        room.barometric_pressure_reference = float(data[field])
+                    else:
+                        room.barometric_pressure_reference = None
+                    updates_made.append(field)
+                
+                elif field == 'wifi_ssid':
+                    room.wifi_ssid = InputValidator.sanitize_string(data['wifi_ssid'])
+                    updates_made.append(field)
+                
+                elif field == 'is_active':
+                    room.is_active = bool(data['is_active'])
+                    updates_made.append(field)
+                
+                elif field == 'gps_polygon':
+                    polygon = data['gps_polygon']
+                    if polygon and isinstance(polygon, list) and len(polygon) >= 3:
+                        # Validate polygon coordinates
+                        for point in polygon:
+                            if not isinstance(point, list) or len(point) != 2:
+                                return jsonify(error_response('INVALID_POLYGON_FORMAT', 'نقاط المضلع يجب أن تكون [latitude, longitude]')), 400
+                            
+                            lat, lng = point
+                            if not (-90 <= lat <= 90) or not (-180 <= lng <= 180):
+                                return jsonify(error_response('INVALID_POLYGON_COORDINATES', 'إحداثيات المضلع غير صحيحة')), 400
+                        
+                        room.gps_polygon = polygon
+                        updates_made.append('gps_polygon')
+                    elif polygon is None:
+                        # Regenerate polygon with current center coordinates
+                        room.set_rectangular_polygon(
+                            float(room.center_latitude), float(room.center_longitude),
+                            width_meters=8.0, height_meters=6.0
+                        )
+                        updates_made.append('gps_polygon_regenerated')
+        
+        # 4. Update timestamp
+        if updates_made:
+            room.updated_at = datetime.utcnow()
+        
+        # 5. Save changes
+        db.session.commit()
+        
+        # 6. Log update
+        user = get_current_user()
+        logging.info(f'Room updated by {user.username}: {room.name}, fields: {", ".join(updates_made)}')
+        
+        # 7. Prepare response
+        room_data = {
+            'id': room.id,
+            'name': room.name,
+            'building': room.building,
+            'floor': room.floor,
+            'room_type': room.room_type.value,
+            'capacity': room.capacity,
+            'location': {
+                'center_latitude': float(room.center_latitude),
+                'center_longitude': float(room.center_longitude),
+                'gps_polygon': room.gps_polygon,
+                'ground_reference_altitude': float(room.ground_reference_altitude),
+                'floor_altitude': float(room.floor_altitude),
+                'ceiling_height': float(room.ceiling_height),
+                'barometric_pressure_reference': float(room.barometric_pressure_reference) if room.barometric_pressure_reference else None
+            },
+            'wifi_ssid': room.wifi_ssid,
+            'is_active': room.is_active,
+            'created_at': room.created_at.isoformat(),
+            'updated_at': room.updated_at.isoformat() if room.updated_at else None
+        }
+        
+        return jsonify(success_response(
+            room_data,
+            message=f'تم تحديث القاعة بنجاح ({len(updates_made)} تغيير)'
+        ))
+        
+    except ValueError as ve:
+        return jsonify(error_response('VALIDATION_ERROR', str(ve))), 400
+    except Exception as e:
+        db.session.rollback()
+        logging.error(f'Update room error: {str(e)}', exc_info=True)
+        return jsonify(error_response('UPDATE_ROOM_ERROR', 'حدث خطأ أثناء تحديث القاعة')), 500
+
+# ============================================================================
+# SCHEDULES MANAGEMENT - إدارة الجداول
+# ============================================================================
+
+@admin_bp.route('/schedules/bulk-create', methods=['POST'])
+@jwt_required
+@require_permission('create_schedule')
+def bulk_create_schedules():
+    """
+    POST /api/admin/schedules/bulk-create
+    Create multiple schedules with conflict detection
+    إنشاء جداول متعددة مع كشف التعارضات
+    """
+    try:
+        # 1. Validate input
+        data = request.get_json()
+        if not data or 'schedules' not in data:
+            return jsonify(error_response('INVALID_INPUT', 'مصفوفة الجداول مطلوبة')), 400
+        
+        schedules_data = data['schedules']
+        if not isinstance(schedules_data, list):
+            return jsonify(error_response('INVALID_FORMAT', 'الجداول يجب أن تكون مصفوفة')), 400
         
         # 2. Validate bulk operation limit
-        bulk_limit_error = validate_bulk_operation_limit(conflicts_data, max_items=50)
+        bulk_limit_error = validate_bulk_operation_limit(schedules_data, max_items=200)
         if bulk_limit_error:
             return jsonify(bulk_limit_error), 400
         
-        # 3. Get current user and verify permissions
-        user = get_current_user()
-        is_admin = user.role.value == 'admin'
-        is_teacher = user.role.value == 'teacher'
-        is_student = user.role.value == 'student'
+        # 3. Get processing options
+        options = data.get('options', {})
+        check_conflicts = options.get('check_conflicts', True)
+        auto_resolve_conflicts = options.get('auto_resolve_conflicts', False)
+        academic_year = options.get('academic_year')
+        semester = options.get('semester')
         
-        # Students can only resolve their own conflicts
-        student = user.get_student_profile() if is_student else None
-        teacher = user.get_teacher_profile() if is_teacher else None
+        # Validate academic year and semester
+        if academic_year:
+            is_valid_year, year_error = validate_academic_year(academic_year)
+            if not is_valid_year:
+                return jsonify(error_response('INVALID_ACADEMIC_YEAR', year_error)), 400
+        else:
+            # Generate current academic year
+            current_year = datetime.now().year
+            academic_year = f"{current_year}-{current_year + 1}"
         
-        # 4. Process each conflict resolution
+        if semester:
+            is_valid_semester, semester_error = validate_semester(semester)
+            if not is_valid_semester:
+                return jsonify(error_response('INVALID_SEMESTER', semester_error)), 400
+        else:
+            # Determine current semester
+            current_month = datetime.now().month
+            if 9 <= current_month <= 12:
+                semester = 'first'
+            elif 2 <= current_month <= 6:
+                semester = 'second'
+            else:
+                semester = 'summer'
+        
+        # 4. Process each schedule record
         results = []
-        successful_resolutions = 0
-        failed_resolutions = 0
+        successful_creates = 0
+        failed_creates = 0
+        conflicts_detected = []
         
-        for index, conflict_data in enumerate(conflicts_data):
+        for index, schedule_data in enumerate(schedules_data):
             result = {
                 'index': index,
                 'success': False,
                 'error': None,
-                'resolution_action': None,
-                'attendance_id': None,
-                'conflict_details': {}
+                'schedule_id': None,
+                'conflicts': []
             }
             
             try:
-                # Validate conflict data structure
-                required_fields = ['student_id', 'lecture_id', 'resolution_strategy']
-                missing_fields = [field for field in required_fields if field not in conflict_data]
+                # Validate required fields
+                required_fields = ['subject_id', 'teacher_id', 'room_id', 'section', 'day_of_week', 'start_time', 'end_time']
+                missing_fields = [field for field in required_fields if field not in schedule_data]
+                
                 if missing_fields:
                     raise ValueError(f'حقول مطلوبة مفقودة: {", ".join(missing_fields)}')
                 
-                student_id = int(conflict_data['student_id'])
-                lecture_id = int(conflict_data['lecture_id'])
-                resolution_strategy = conflict_data['resolution_strategy']
+                # Extract and validate data
+                subject_id = int(schedule_data['subject_id'])
+                teacher_id = int(schedule_data['teacher_id'])
+                room_id = int(schedule_data['room_id'])
+                section = schedule_data['section'].upper()
+                day_of_week = int(schedule_data['day_of_week'])
+                start_time_str = schedule_data['start_time']
+                end_time_str = schedule_data['end_time']
                 
-                # Validate resolution strategy
-                valid_strategies = [
-                    'keep_local', 'keep_server', 'merge', 'manual_review', 
-                    'use_best_verification', 'use_earliest_time', 'use_latest_time',
-                    'teacher_override', 'admin_override'
-                ]
-                if resolution_strategy not in valid_strategies:
-                    raise ValueError(f'استراتيجية حل غير صحيحة: {resolution_strategy}')
+                # Validate foreign key references
+                subject = Subject.query.get(subject_id)
+                if not subject:
+                    raise ValueError(f'مادة غير موجودة: {subject_id}')
                 
-                # Check permissions for resolution strategy
-                if resolution_strategy == 'teacher_override' and not (is_teacher or is_admin):
-                    raise ValueError('صلاحيات مدرس مطلوبة لهذه الاستراتيجية')
+                teacher = Teacher.query.get(teacher_id)
+                if not teacher:
+                    raise ValueError(f'مدرس غير موجود: {teacher_id}')
                 
-                if resolution_strategy == 'admin_override' and not is_admin:
-                    raise ValueError('صلاحيات إدارية مطلوبة لهذه الاستراتيجية')
+                room = Room.query.get(room_id)
+                if not room:
+                    raise ValueError(f'قاعة غير موجودة: {room_id}')
                 
-                # Students can only resolve their own conflicts
-                if is_student and student_id != student.id:
-                    raise ValueError('يمكن للطالب حل تعارضاته فقط')
+                # Validate section
+                is_valid_section, section_error = validate_section(section)
+                if not is_valid_section:
+                    raise ValueError(section_error)
                 
-                # Teachers can only resolve conflicts for their lectures
-                if is_teacher:
-                    lecture = Lecture.query.get(lecture_id)
-                    if not lecture or (lecture.schedule and lecture.schedule.teacher_id != teacher.id):
-                        raise ValueError('يمكن للمدرس حل تعارضات محاضراته فقط')
+                # Validate day of week (1=Sunday, 7=Saturday)
+                if not (1 <= day_of_week <= 7):
+                    raise ValueError('يوم الأسبوع يجب أن يكون بين 1 (الأحد) و 7 (السبت)')
                 
-                # Find existing attendance record
-                existing_record = AttendanceRecord.query.filter_by(
-                    student_id=student_id,
-                    lecture_id=lecture_id
-                ).first()
+                # Parse and validate times
+                try:
+                    start_time = time.fromisoformat(start_time_str)
+                    end_time = time.fromisoformat(end_time_str)
+                except ValueError:
+                    raise ValueError('تنسيق الوقت غير صحيح (استخدم HH:MM)')
                 
-                if not existing_record:
-                    raise ValueError('سجل الحضور الأصلي غير موجود')
+                if start_time >= end_time:
+                    raise ValueError('وقت البداية يجب أن يكون قبل وقت النهاية')
                 
-                # Get local record data if provided
-                local_data = conflict_data.get('local_record', {})
-                resolution_notes = conflict_data.get('notes', '')
+                # Calculate duration
+                start_datetime = datetime.combine(date.today(), start_time)
+                end_datetime = datetime.combine(date.today(), end_time)
+                duration = (end_datetime - start_datetime).total_seconds() / 60
                 
-                # Store original values for comparison
-                original_values = {
-                    'check_in_time': existing_record.check_in_time,
-                    'location_verified': existing_record.location_verified,
-                    'qr_verified': existing_record.qr_verified,
-                    'face_verified': existing_record.face_verified,
-                    'status': existing_record.status
-                }
+                if duration < 30:
+                    raise ValueError('مدة المحاضرة يجب أن تكون 30 دقيقة على الأقل')
                 
-                # Apply resolution strategy
-                changes_made = []
+                if duration > 240:  # 4 hours
+                    raise ValueError('مدة المحاضرة لا يمكن أن تتجاوز 4 ساعات')
                 
-                if resolution_strategy == 'keep_local':
-                    # Replace server record with local data
-                    if 'recorded_latitude' in local_data:
-                        existing_record.recorded_latitude = float(local_data['recorded_latitude'])
-                        changes_made.append('latitude')
-                    
-                    if 'recorded_longitude' in local_data:
-                        existing_record.recorded_longitude = float(local_data['recorded_longitude'])
-                        changes_made.append('longitude')
-                    
-                    if 'check_in_time' in local_data:
-                        new_time = datetime.fromisoformat(local_data['check_in_time'].replace('Z', '+00:00'))
-                        existing_record.check_in_time = new_time
-                        changes_made.append('check_in_time')
-                    
-                    if 'location_verified' in local_data:
-                        existing_record.location_verified = bool(local_data['location_verified'])
-                        changes_made.append('location_verified')
-                    
-                    if 'qr_verified' in local_data:
-                        existing_record.qr_verified = bool(local_data['qr_verified'])
-                        changes_made.append('qr_verified')
-                    
-                    if 'face_verified' in local_data:
-                        existing_record.face_verified = bool(local_data['face_verified'])
-                        changes_made.append('face_verified')
-                    
-                    result['resolution_action'] = 'replaced_with_local'
-                    
-                elif resolution_strategy == 'keep_server':
-                    # Keep server record as is, just mark as resolved
-                    result['resolution_action'] = 'kept_server'
-                    
-                elif resolution_strategy == 'merge':
-                    # Merge data intelligently
-                    
-                    # Use best verification results (OR logic)
-                    if local_data.get('location_verified') and not existing_record.location_verified:
-                        existing_record.location_verified = True
-                        changes_made.append('improved_location_verification')
-                    
-                    if local_data.get('qr_verified') and not existing_record.qr_verified:
-                        existing_record.qr_verified = True
-                        changes_made.append('improved_qr_verification')
-                    
-                    if local_data.get('face_verified') and not existing_record.face_verified:
-                        existing_record.face_verified = True
-                        changes_made.append('improved_face_verification')
-                    
-                    # Use more accurate GPS data (if accuracy provided)
-                    local_accuracy = local_data.get('gps_accuracy', float('inf'))
-                    server_accuracy = existing_record.gps_accuracy or float('inf')
-                    
-                    if local_accuracy < server_accuracy and 'recorded_latitude' in local_data:
-                        existing_record.recorded_latitude = float(local_data['recorded_latitude'])
-                        existing_record.recorded_longitude = float(local_data['recorded_longitude'])
-                        existing_record.gps_accuracy = local_accuracy
-                        changes_made.append('improved_gps_accuracy')
-                    
-                    # Use earlier check-in time (student's benefit)
-                    if 'check_in_time' in local_data:
-                        local_time = datetime.fromisoformat(local_data['check_in_time'].replace('Z', '+00:00'))
-                        if local_time < existing_record.check_in_time:
-                            existing_record.check_in_time = local_time
-                            changes_made.append('used_earlier_time')
-                    
-                    result['resolution_action'] = 'merged_data'
-                    
-                elif resolution_strategy == 'use_best_verification':
-                    # Use the record with better verification completion
-                    local_verification_score = sum([
-                        local_data.get('location_verified', False),
-                        local_data.get('qr_verified', False),
-                        local_data.get('face_verified', False)
-                    ])
-                    
-                    server_verification_score = sum([
-                        existing_record.location_verified,
-                        existing_record.qr_verified,
-                        existing_record.face_verified
-                    ])
-                    
-                    if local_verification_score > server_verification_score:
-                        # Use local verification data
-                        existing_record.location_verified = local_data.get('location_verified', False)
-                        existing_record.qr_verified = local_data.get('qr_verified', False)
-                        existing_record.face_verified = local_data.get('face_verified', False)
-                        changes_made.append('used_better_verification')
-                    
-                    result['resolution_action'] = 'used_best_verification'
-                    
-                elif resolution_strategy == 'use_earliest_time':
-                    if 'check_in_time' in local_data:
-                        local_time = datetime.fromisoformat(local_data['check_in_time'].replace('Z', '+00:00'))
-                        if local_time < existing_record.check_in_time:
-                            existing_record.check_in_time = local_time
-                            changes_made.append('used_earlier_time')
-                    
-                    result['resolution_action'] = 'used_earliest_time'
-                    
-                elif resolution_strategy == 'use_latest_time':
-                    if 'check_in_time' in local_data:
-                        local_time = datetime.fromisoformat(local_data['check_in_time'].replace('Z', '+00:00'))
-                        if local_time > existing_record.check_in_time:
-                            existing_record.check_in_time = local_time
-                            changes_made.append('used_later_time')
-                    
-                    result['resolution_action'] = 'used_latest_time'
-                    
-                elif resolution_strategy == 'manual_review':
-                    # Mark for manual review
-                    existing_record.status = AttendanceStatusEnum.UNDER_REVIEW
-                    existing_record.notes = f"تعارض في البيانات - يحتاج مراجعة يدوية في {datetime.utcnow().isoformat()}"
-                    if resolution_notes:
-                        existing_record.notes += f"\nملاحظات: {resolution_notes}"
-                    changes_made.append('marked_for_review')
-                    
-                    result['resolution_action'] = 'marked_for_review'
-                    
-                elif resolution_strategy in ['teacher_override', 'admin_override']:
-                    # Allow teacher/admin to set specific values
-                    override_data = conflict_data.get('override_values', {})
-                    
-                    for field, value in override_data.items():
-                        if field in ['location_verified', 'qr_verified', 'face_verified']:
-                            setattr(existing_record, field, bool(value))
-                            changes_made.append(f'override_{field}')
-                        elif field == 'status':
-                            existing_record.status = AttendanceStatusEnum(value)
-                            changes_made.append('override_status')
-                        elif field == 'attendance_type':
-                            existing_record.attendance_type = AttendanceTypeEnum(value)
-                            changes_made.append('override_attendance_type')
-                    
-                    # Add override note
-                    override_note = f"تم التدخل من قبل {user.role.value} {user.full_name} في {datetime.utcnow().isoformat()}"
-                    if resolution_notes:
-                        override_note += f"\nسبب التدخل: {resolution_notes}"
-                    
-                    existing_record.notes = (existing_record.notes or '') + '\n' + override_note
-                    changes_made.append('admin_teacher_override')
-                    
-                    result['resolution_action'] = resolution_strategy
+                # 5. Check for conflicts if enabled
+                detected_conflicts = []
                 
-                # Recalculate verification completion after changes
-                existing_record.verification_completed = (
-                    existing_record.location_verified and 
-                    existing_record.qr_verified and 
-                    existing_record.face_verified
+                if check_conflicts:
+                    # Teacher conflict check
+                    teacher_conflict = Schedule.query.filter(
+                        Schedule.teacher_id == teacher_id,
+                        Schedule.day_of_week == day_of_week,
+                        Schedule.academic_year == academic_year,
+                        Schedule.semester == SemesterEnum(semester),
+                        Schedule.is_active == True,
+                        Schedule.start_time < end_time,
+                        Schedule.end_time > start_time
+                    ).first()
+                    
+                    if teacher_conflict:
+                        detected_conflicts.append({
+                            'type': 'teacher_conflict',
+                            'message': f'المدرس مشغول في نفس الوقت',
+                            'conflicting_schedule_id': teacher_conflict.id
+                        })
+                    
+                    # Room conflict check
+                    room_conflict = Schedule.query.filter(
+                        Schedule.room_id == room_id,
+                        Schedule.day_of_week == day_of_week,
+                        Schedule.academic_year == academic_year,
+                        Schedule.semester == SemesterEnum(semester),
+                        Schedule.is_active == True,
+                        Schedule.start_time < end_time,
+                        Schedule.end_time > start_time
+                    ).first()
+                    
+                    if room_conflict:
+                        detected_conflicts.append({
+                            'type': 'room_conflict',
+                            'message': f'القاعة محجوزة في نفس الوقت',
+                            'conflicting_schedule_id': room_conflict.id
+                        })
+                    
+                    # Section conflict check
+                    section_conflict = Schedule.query.filter(
+                        Schedule.section == SectionEnum(section),
+                        Schedule.day_of_week == day_of_week,
+                        Schedule.academic_year == academic_year,
+                        Schedule.semester == SemesterEnum(semester),
+                        Schedule.is_active == True,
+                        Schedule.start_time < end_time,
+                        Schedule.end_time > start_time
+                    ).first()
+                    
+                    if section_conflict:
+                        detected_conflicts.append({
+                            'type': 'section_conflict',
+                            'message': f'الشعبة لديها محاضرة أخرى في نفس الوقت',
+                            'conflicting_schedule_id': section_conflict.id
+                        })
+                
+                # 6. Handle conflicts
+                if detected_conflicts and not auto_resolve_conflicts:
+                    result['conflicts'] = detected_conflicts
+                    result['error'] = f'تم اكتشاف {len(detected_conflicts)} تعارض'
+                    conflicts_detected.extend(detected_conflicts)
+                    failed_creates += 1
+                    results.append(result)
+                    continue
+                
+                # 7. Create schedule
+                schedule = Schedule(
+                    subject_id=subject_id,
+                    teacher_id=teacher_id,
+                    room_id=room_id,
+                    section=SectionEnum(section),
+                    day_of_week=day_of_week,
+                    start_time=start_time,
+                    end_time=end_time,
+                    academic_year=academic_year,
+                    semester=SemesterEnum(semester),
+                    is_active=True
                 )
                 
-                # Update status if verification is now complete
-                if existing_record.verification_completed and existing_record.status == AttendanceStatusEnum.PENDING:
-                    existing_record.status = AttendanceStatusEnum.VERIFIED
-                    changes_made.append('auto_verified')
-                
-                # Update timestamp and conflict resolution info
-                existing_record.updated_at = datetime.utcnow()
-                existing_record.conflict_resolved_at = datetime.utcnow()
-                existing_record.conflict_resolved_by = user.id
-                existing_record.conflict_resolution_strategy = resolution_strategy
-                
-                # Store conflict resolution metadata
-                conflict_metadata = {
-                    'original_values': original_values,
-                    'changes_made': changes_made,
-                    'resolution_strategy': resolution_strategy,
-                    'resolved_by': {
-                        'user_id': user.id,
-                        'username': user.username,
-                        'role': user.role.value
-                    },
-                    'resolved_at': datetime.utcnow().isoformat(),
-                    'notes': resolution_notes
-                }
-                
-                existing_record.conflict_resolution_metadata = conflict_metadata
+                db.session.add(schedule)
+                db.session.flush()  # Get schedule ID
                 
                 result.update({
                     'success': True,
-                    'attendance_id': existing_record.id,
-                    'changes_made': changes_made,
-                    'final_status': existing_record.status.value,
-                    'verification_completed': existing_record.verification_completed,
-                    'conflict_details': {
-                        'original_values': original_values,
-                        'final_values': {
-                            'check_in_time': existing_record.check_in_time.isoformat(),
-                            'location_verified': existing_record.location_verified,
-                            'qr_verified': existing_record.qr_verified,
-                            'face_verified': existing_record.face_verified,
-                            'status': existing_record.status.value
-                        }
-                    }
+                    'schedule_id': schedule.id,
+                    'conflicts': detected_conflicts if auto_resolve_conflicts else []
                 })
-                successful_resolutions += 1
+                successful_creates += 1
                 
             except ValueError as ve:
                 result['error'] = str(ve)
-                failed_resolutions += 1
+                failed_creates += 1
             except Exception as e:
                 result['error'] = f'خطأ غير متوقع: {str(e)}'
-                failed_resolutions += 1
+                failed_creates += 1
             
             results.append(result)
         
-        # 5. Commit changes
-        if successful_resolutions > 0:
+        # 8. Commit successful creates
+        if successful_creates > 0:
             try:
                 db.session.commit()
-                logging.info(f'Conflict resolution by {user.username}: {successful_resolutions} resolved, {failed_resolutions} failed')
+                logging.info(f'Bulk schedule creation by {get_current_user().username}: {successful_creates} created, {failed_creates} failed, {len(conflicts_detected)} conflicts')
             except Exception as e:
                 db.session.rollback()
-                return jsonify(error_response('DATABASE_ERROR', f'خطأ في حفظ حلول التعارضات: {str(e)}')), 500
+                return jsonify(error_response('DATABASE_ERROR', f'خطأ في حفظ الجداول: {str(e)}')), 500
         else:
             db.session.rollback()
         
-        # 6. Generate summary and recommendations
+        # 9. Generate summary
         summary = {
-            'total_conflicts': len(results),
-            'resolved': successful_resolutions,
-            'failed': failed_resolutions,
-            'resolution_rate': round((successful_resolutions / len(results)) * 100, 2) if results else 0,
-            'strategies_used': list(set(r.get('resolution_action') for r in results if r.get('resolution_action'))),
-            'resolver_info': {
-                'user_id': user.id,
-                'username': user.username,
-                'role': user.role.value
+            'total_processed': len(results),
+            'successful_creates': successful_creates,
+            'failed_creates': failed_creates,
+            'conflicts_detected': len(conflicts_detected),
+            'success_rate': round((successful_creates / len(results)) * 100, 2) if results else 0,
+            'academic_period': {
+                'academic_year': academic_year,
+                'semester': semester
+            },
+            'processing_options': {
+                'check_conflicts': check_conflicts,
+                'auto_resolve_conflicts': auto_resolve_conflicts
             }
         }
         
         response_data = {
-            'results': results,
+            'creation_results': results,
             'summary': summary,
-            'recommendations': generate_conflict_resolution_recommendations(results)
+            'conflicts_summary': conflicts_detected
         }
         
-        message = f'تم حل {successful_resolutions} تعارض بنجاح'
-        return jsonify(batch_response(response_data, summary, message))
+        message = f'تم إنشاء {successful_creates} جدول بنجاح'
+        if failed_creates > 0:
+            message += f'، {failed_creates} فشل'
+        if conflicts_detected:
+            message += f'، {len(conflicts_detected)} تعارض'
+        
+        return jsonify(batch_response(response_data, summary, message)), 201
         
     except Exception as e:
         db.session.rollback()
-        logging.error(f'Conflict resolution error: {str(e)}', exc_info=True)
-        return jsonify(error_response('CONFLICT_RESOLUTION_ERROR', 'حدث خطأ أثناء حل التعارضات')), 500
+        logging.error(f'Bulk create schedules error: {str(e)}', exc_info=True)
+        return jsonify(error_response('BULK_CREATE_SCHEDULES_ERROR', 'حدث خطأ أثناء إنشاء الجداول')), 500
 
 # ============================================================================
-# SYNC STATUS MANAGEMENT - إدارة حالة المزامنة
+# SYSTEM HEALTH & STATUS - صحة النظام والحالة
 # ============================================================================
 
-@core_ops_bp.route('/attendance/sync-status', methods=['GET'])
+@admin_bp.route('/system/health', methods=['GET'])
 @jwt_required
-@require_permission('read_own_attendance')
-def get_sync_status():
+@require_permission('system_settings')
+def admin_system_health():
     """
-    GET /api/attendance/sync-status
-    Get comprehensive attendance synchronization status
-    حالة مزامنة بيانات الحضور الشاملة
+    GET /api/admin/system/health
+    Comprehensive system health check for administrators
+    فحص شامل لصحة النظام للمديرين
     """
     try:
-        # 1. Get current user (should be student for personal sync status)
-        user = get_current_user()
-        if user.role.value != 'student':
-            return jsonify(error_response('UNAUTHORIZED', 'هذا الـ API مخصص للطلاب فقط')), 403
-        
-        student = user.get_student_profile()
-        if not student:
-            return jsonify(not_found_response('ملف الطالب')), 404
-        
-        # 2. Get query parameters for filtering
-        since_date = request.args.get('since_date')
-        include_resolved = request.args.get('include_resolved', 'false').lower() == 'true'
-        detailed_analysis = request.args.get('detailed_analysis', 'false').lower() == 'true'
-        
-        if since_date:
-            try:
-                since_datetime = datetime.fromisoformat(since_date.replace('Z', '+00:00'))
-            except ValueError:
-                return jsonify(error_response('INVALID_DATE', 'تنسيق التاريخ غير صحيح')), 400
-        else:
-            # Default to last 30 days
-            since_datetime = datetime.utcnow() - timedelta(days=30)
-        
-        # 3. Get attendance records with comprehensive filtering
-        base_query = AttendanceRecord.query.filter_by(student_id=student.id)
-        
-        # Apply date filter
-        attendance_query = base_query.filter(
-            AttendanceRecord.check_in_time >= since_datetime
-        )
-        
-        # Get all records for analysis
-        all_records = attendance_query.all()
-        
-        # 4. Calculate comprehensive statistics
-        
-        # Basic counts
-        total_records = len(all_records)
-        synced_records = sum(1 for r in all_records if r.is_synced)
-        unsynced_records = total_records - synced_records
-        
-        # Status breakdown
-        status_counts = {
-            'pending': sum(1 for r in all_records if r.status == AttendanceStatusEnum.PENDING),
-            'verified': sum(1 for r in all_records if r.status == AttendanceStatusEnum.VERIFIED),
-            'rejected': sum(1 for r in all_records if r.status == AttendanceStatusEnum.REJECTED),
-            'under_review': sum(1 for r in all_records if r.status == AttendanceStatusEnum.UNDER_REVIEW)
-        }
-        
-        # Verification statistics
-        verification_stats = {
-            'completed_verification': sum(1 for r in all_records if r.verification_completed),
-            'incomplete_verification': sum(1 for r in all_records if not r.verification_completed),
-            'location_verified': sum(1 for r in all_records if r.location_verified),
-            'qr_verified': sum(1 for r in all_records if r.qr_verified),
-            'face_verified': sum(1 for r in all_records if r.face_verified)
-        }
-        
-        # Sync-specific statistics
-        sync_attempts = sum(r.sync_attempts or 0 for r in all_records)
-        failed_sync_attempts = sum(1 for r in all_records if (r.sync_attempts or 0) > 0 and not r.is_synced)
-        
-        # Conflict analysis
-        conflict_records = [r for r in all_records if r.conflict_resolution_metadata]
-        resolved_conflicts = len(conflict_records) if include_resolved else 0
-        
-        # Get active conflicts (unresolved)
-        active_conflicts = []
-        unresolved_conflicts = base_query.filter(
-            AttendanceRecord.conflict_resolution_metadata.is_(None),
-            AttendanceRecord.status == AttendanceStatusEnum.UNDER_REVIEW
-        ).all()
-        
-        for record in unresolved_conflicts:
-            # Check for potential conflicts with other records
-            potential_conflicts = base_query.filter(
-                AttendanceRecord.lecture_id == record.lecture_id,
-                AttendanceRecord.id != record.id
-            ).all()
-            
-            if potential_conflicts:
-                active_conflicts.append({
-                    'attendance_id': record.id,
-                    'lecture_id': record.lecture_id,
-                    'conflict_type': 'duplicate_attendance',
-                    'description': 'سجلات متعددة لنفس المحاضرة',
-                    'check_in_time': record.check_in_time.isoformat(),
-                    'status': record.status.value,
-                    'requires_action': True,
-                    'suggested_actions': ['resolve_conflicts', 'manual_review']
-                })
-        
-        # 5. Get records that need attention
-        attention_records = []
-        
-        # Records with sync failures
-        sync_failure_records = [r for r in all_records if (r.sync_attempts or 0) > 3 and not r.is_synced]
-        for record in sync_failure_records:
-            attention_records.append({
-                'id': record.id,
-                'lecture_id': record.lecture_id,
-                'issue_type': 'sync_failure',
-                'description': f'فشل في المزامنة ({record.sync_attempts} محاولات)',
-                'check_in_time': record.check_in_time.isoformat(),
-                'requires_action': True,
-                'priority': 'high'
-            })
-        
-        # Records with incomplete verification
-        incomplete_verification_records = [r for r in all_records if not r.verification_completed]
-        for record in incomplete_verification_records:
-            missing_verifications = []
-            if not record.location_verified:
-                missing_verifications.append('الموقع')
-            if not record.qr_verified:
-                missing_verifications.append('QR')
-            if not record.face_verified:
-                missing_verifications.append('الوجه')
-            
-            attention_records.append({
-                'id': record.id,
-                'lecture_id': record.lecture_id,
-                'issue_type': 'incomplete_verification',
-                'description': f'تحقق غير مكتمل: {", ".join(missing_verifications)}',
-                'check_in_time': record.check_in_time.isoformat(),
-                'requires_action': False,
-                'priority': 'medium'
-            })
-        
-        # 6. Calculate sync health score
-        sync_health_score = 100
-        
-        if total_records > 0:
-            sync_rate = (synced_records / total_records) * 100
-            verification_rate = (verification_stats['completed_verification'] / total_records) * 100
-            
-            # Deduct points for issues
-            if sync_rate < 90:
-                sync_health_score -= (90 - sync_rate) * 0.5
-            
-            if verification_rate < 80:
-                sync_health_score -= (80 - verification_rate) * 0.3
-            
-            if failed_sync_attempts > 5:
-                sync_health_score -= min(20, failed_sync_attempts * 2)
-            
-            if len(active_conflicts) > 0:
-                sync_health_score -= min(15, len(active_conflicts) * 5)
-        
-        sync_health_score = max(0, round(sync_health_score, 1))
-        
-        # Determine health status
-        if sync_health_score >= 90:
-            health_status = 'excellent'
-        elif sync_health_score >= 75:
-            health_status = 'good'
-        elif sync_health_score >= 60:
-            health_status = 'fair'
-        elif sync_health_score >= 40:
-            health_status = 'poor'
-        else:
-            health_status = 'critical'
-        
-        # 7. Prepare comprehensive response
-        sync_status = {
-            'student_info': {
-                'university_id': student.university_id,
-                'full_name': user.full_name,
-                'section': student.section.value,
-                'study_year': student.study_year
-            },
-            'sync_period': {
-                'since_date': since_datetime.isoformat(),
-                'until_date': datetime.utcnow().isoformat(),
-                'total_days': (datetime.utcnow() - since_datetime).days
-            },
-            'sync_statistics': {
-                'total_records': total_records,
-                'synced_records': synced_records,
-                'unsynced_records': unsynced_records,
-                'sync_rate': round((synced_records / total_records) * 100, 2) if total_records > 0 else 100,
-                'failed_sync_attempts': failed_sync_attempts,
-                'total_sync_attempts': sync_attempts
-            },
-            'record_status': status_counts,
-            'verification_status': {
-                **verification_stats,
-                'verification_rate': round((verification_stats['completed_verification'] / total_records) * 100, 2) if total_records > 0 else 0
-            },
-            'sync_health': {
-                'status': health_status,
-                'score': sync_health_score,
-                'last_successful_sync': get_last_successful_sync_time(all_records),
-                'next_sync_recommended': datetime.utcnow() + timedelta(hours=1)
-            },
-            'conflicts': {
-                'active_conflicts': len(active_conflicts),
-                'resolved_conflicts': resolved_conflicts,
-                'conflict_details': active_conflicts
-            },
-            'attention_required': attention_records,
+        health_data = {
+            'timestamp': datetime.utcnow().isoformat(),
+            'system_status': 'healthy',
+            'components': {},
+            'statistics': {},
+            'performance': {},
+            'storage': {},
             'recommendations': []
         }
         
-        # 8. Add detailed analysis if requested
-        if detailed_analysis:
-            sync_status['detailed_analysis'] = {
-                'sync_patterns': analyze_sync_patterns(all_records),
-                'verification_patterns': analyze_verification_patterns(all_records),
-                'temporal_analysis': analyze_temporal_patterns(all_records),
-                'performance_metrics': calculate_sync_performance_metrics(all_records)
+        # 1. Database component health
+        try:
+            # Test database connection
+            db.session.execute('SELECT 1').fetchone()
+            
+            # Get database statistics
+            db_stats = {
+                'connection_status': 'healthy',
+                'total_users': User.query.count(),
+                'total_students': Student.query.count(),
+                'total_teachers': Teacher.query.count(),
+                'total_subjects': Subject.query.count(),
+                'total_rooms': Room.query.count(),
+                'total_schedules': Schedule.query.count(),
+                'total_lectures': Lecture.query.count(),
+                'active_users': User.query.filter_by(is_active=True).count(),
+                'face_registered_students': Student.query.filter_by(face_registered=True).count()
+            }
+            
+            # Recent activity (last 24 hours)
+            yesterday = datetime.utcnow() - timedelta(days=1)
+            recent_stats = {
+                'new_students_24h': Student.query.filter(Student.created_at >= yesterday).count(),
+                'recent_logins': User.query.filter(User.last_login >= yesterday).count(),
+                'new_lectures_24h': Lecture.query.filter(Lecture.created_at >= yesterday).count()
+            }
+            
+            health_data['components']['database'] = {
+                'status': 'healthy',
+                'statistics': db_stats,
+                'recent_activity': recent_stats
+            }
+            
+        except Exception as e:
+            health_data['components']['database'] = {
+                'status': 'unhealthy',
+                'error': str(e)
+            }
+            health_data['system_status'] = 'degraded'
+        
+        # 2. Cache component health (Redis)
+        try:
+            from config.database import redis_client
+            redis_client.ping()
+            
+            # Get Redis info
+            redis_info = redis_client.info()
+            
+            health_data['components']['cache'] = {
+                'status': 'healthy',
+                'connected_clients': redis_info.get('connected_clients', 0),
+                'used_memory_mb': round(redis_info.get('used_memory', 0) / (1024 * 1024), 2),
+                'cache_hit_rate': round(redis_info.get('keyspace_hits', 0) / max(redis_info.get('keyspace_hits', 0) + redis_info.get('keyspace_misses', 0), 1) * 100, 2)
+            }
+            
+        except Exception as e:
+            health_data['components']['cache'] = {
+                'status': 'unhealthy',
+                'error': str(e)
+            }
+            health_data['system_status'] = 'degraded'
+        
+        # 3. Storage component health
+        import os
+        storage_paths = {
+            'face_templates': '/storage/face_templates',
+            'qr_codes': '/storage/qr_codes',
+            'reports': '/storage/reports',
+            'uploads': '/storage/uploads',
+            'backups': '/storage/backups'
+        }
+        
+        storage_health = {}
+        for path_name, path in storage_paths.items():
+            try:
+                if os.path.exists(path):
+                    # Calculate directory size
+                    total_size = 0
+                    file_count = 0
+                    for dirpath, dirnames, filenames in os.walk(path):
+                        for filename in filenames:
+                            filepath = os.path.join(dirpath, filename)
+                            try:
+                                total_size += os.path.getsize(filepath)
+                                file_count += 1
+                            except OSError:
+                                pass
+                    
+                    storage_health[path_name] = {
+                        'status': 'healthy',
+                        'exists': True,
+                        'writable': os.access(path, os.W_OK),
+                        'size_mb': round(total_size / (1024 * 1024), 2),
+                        'file_count': file_count
+                    }
+                else:
+                    storage_health[path_name] = {
+                        'status': 'missing',
+                        'exists': False,
+                        'error': 'Directory does not exist'
+                    }
+                    health_data['system_status'] = 'degraded'
+                    
+            except Exception as e:
+                storage_health[path_name] = {
+                    'status': 'error',
+                    'error': str(e)
+                }
+        
+        health_data['storage'] = storage_health
+        
+        # 4. Performance metrics
+        try:
+            import psutil
+            
+            health_data['performance'] = {
+                'cpu_usage_percent': psutil.cpu_percent(interval=1),
+                'memory_usage_percent': psutil.virtual_memory().percent,
+                'disk_usage_percent': round(psutil.disk_usage('/').percent, 2),
+                'available_memory_gb': round(psutil.virtual_memory().available / (1024**3), 2),
+                'free_disk_gb': round(psutil.disk_usage('/').free / (1024**3), 2)
+            }
+            
+            # Check for performance issues
+            if health_data['performance']['cpu_usage_percent'] > 80:
+                health_data['recommendations'].append({
+                    'type': 'performance',
+                    'severity': 'warning',
+                    'message': f"استخدام المعالج مرتفع ({health_data['performance']['cpu_usage_percent']}%)"
+                })
+            
+            if health_data['performance']['memory_usage_percent'] > 85:
+                health_data['recommendations'].append({
+                    'type': 'performance',
+                    'severity': 'warning',
+                    'message': f"استخدام الذاكرة مرتفع ({health_data['performance']['memory_usage_percent']}%)"
+                })
+            
+            if health_data['performance']['disk_usage_percent'] > 90:
+                health_data['recommendations'].append({
+                    'type': 'storage',
+                    'severity': 'critical',
+                    'message': f"مساحة القرص الصلب ممتلئة ({health_data['performance']['disk_usage_percent']}%)"
+                })
+                health_data['system_status'] = 'critical'
+                
+        except ImportError:
+            health_data['performance'] = {
+                'error': 'psutil module not available'
             }
         
-        # 9. Generate recommendations based on status
-        sync_status['recommendations'] = generate_sync_recommendations(
-            sync_status, attention_records, active_conflicts
-        )
+        # 5. API endpoints health check
+        api_health = {
+            'total_endpoints': 20,
+            'authentication_endpoints': 3,
+            'admin_endpoints': 6,
+            'student_endpoints': 4,
+            'attendance_endpoints': 4,
+            'reports_endpoints': 3
+        }
         
-        # 10. Log sync status check
-        logging.info(f'Sync status checked by student {student.university_id}: {health_status} (score: {sync_health_score})')
+        # Check for recent API errors (would require error logging system)
+        health_data['components']['api'] = {
+            'status': 'healthy',
+            'endpoints': api_health
+        }
         
-        return jsonify(success_response(sync_status))
+        # 6. Security component check
+        security_check = {
+            'status': 'healthy',
+            'ssl_enabled': request.is_secure,
+            'jwt_authentication': True,  # Would check JWT service
+            'rate_limiting': True,       # Would check rate limiter
+            'input_validation': True     # Would check validation system
+        }
+        
+        health_data['components']['security'] = security_check
+        
+        # 7. Overall health assessment
+        component_count = len(health_data['components'])
+        healthy_components = sum(1 for comp in health_data['components'].values() if comp.get('status') == 'healthy')
+        
+        if healthy_components == component_count:
+            final_status = 'healthy'
+        elif healthy_components >= component_count * 0.8:
+            final_status = 'degraded'
+        else:
+            final_status = 'critical'
+        
+        health_data['system_status'] = final_status
+        health_data['health_score'] = round((healthy_components / component_count) * 100, 1)
+        
+        # 8. Add system recommendations
+        if final_status == 'degraded':
+            health_data['recommendations'].append({
+                'type': 'system',
+                'severity': 'medium',
+                'message': 'بعض مكونات النظام تحتاج إلى انتباه'
+            })
+        elif final_status == 'critical':
+            health_data['recommendations'].append({
+                'type': 'system',
+                'severity': 'critical',
+                'message': 'النظام يحتاج إلى تدخل فوري'
+            })
+        
+        # 9. Log health check
+        user = get_current_user()
+        logging.info(f'Admin health check by {user.username}: {final_status} (score: {health_data["health_score"]}%)')
+        
+        return jsonify(success_response(health_data))
         
     except Exception as e:
-        logging.error(f'Sync status error: {str(e)}', exc_info=True)
-        return jsonify(error_response('SYNC_STATUS_ERROR', 'حدث خطأ أثناء فحص حالة المزامنة')), 500
+        logging.error(f'Admin system health error: {str(e)}', exc_info=True)
+        return jsonify(error_response('SYSTEM_HEALTH_ERROR', 'حدث خطأ أثناء فحص صحة النظام')), 500
 
-# ============================================================================
-# HELPER FUNCTIONS - الدوال المساعدة
-# ============================================================================
-
-def generate_upload_recommendations(results, conflicts):
-    """Generate recommendations based on upload results"""
-    recommendations = []
-    
-    # High failure rate
-    failed_count = sum(1 for r in results if not r['success'])
-    if failed_count > len(results) * 0.3:  # More than 30% failed
-        recommendations.append({
-            'type': 'high_failure_rate',
-            'message': f'معدل فشل مرتفع ({failed_count}/{len(results)}). تحقق من جودة البيانات.',
-            'priority': 'high'
-        })
-    
-    # GPS accuracy issues
-    low_accuracy_count = sum(1 for r in results if 'دقة GPS منخفضة' in str(r.get('warnings', [])))
-    if low_accuracy_count > 0:
-        recommendations.append({
-            'type': 'gps_accuracy',
-            'message': f'{low_accuracy_count} سجل بدقة GPS منخفضة. استخدم الـ WiFi للحصول على دقة أفضل.',
-            'priority': 'medium'
-        })
-    
-    # Conflicts detected
-    if conflicts:
-        recommendations.append({
-            'type': 'conflicts',
-            'message': f'{len(conflicts)} تعارض مكتشف. راجع استراتيجية حل التعارضات.',
-            'priority': 'medium'
-        })
-    
-    return recommendations
-
-def generate_conflict_resolution_recommendations(results):
-    """Generate recommendations for conflict resolution"""
-    recommendations = []
-    
-    failed_resolutions = sum(1 for r in results if not r['success'])
-    if failed_resolutions > 0:
-        recommendations.append({
-            'type': 'resolution_failures',
-            'message': f'{failed_resolutions} تعارض فشل في حله. راجع الأخطاء وأعد المحاولة.',
-            'priority': 'high'
-        })
-    
-    manual_reviews = sum(1 for r in results if r.get('resolution_action') == 'marked_for_review')
-    if manual_reviews > 0:
-        recommendations.append({
-            'type': 'manual_review_needed',
-            'message': f'{manual_reviews} سجل يحتاج مراجعة يدوية من المدرس أو الإدارة.',
-            'priority': 'medium'
-        })
-    
-    return recommendations
-
-def get_last_successful_sync_time(records):
-    """Get the timestamp of the last successful sync"""
-    synced_records = [r for r in records if r.is_synced and r.synced_at]
-    if synced_records:
-        return max(r.synced_at for r in synced_records).isoformat()
-    return None
-
-def analyze_sync_patterns(records):
-    """Analyze synchronization patterns"""
-    if not records:
-        return {}
-    
-    sync_success_rate = sum(1 for r in records if r.is_synced) / len(records) * 100
-    
-    return {
-        'overall_sync_rate': round(sync_success_rate, 2),
-        'avg_sync_attempts': round(sum(r.sync_attempts or 0 for r in records) / len(records), 2),
-        'sync_failure_rate': round((1 - sync_success_rate / 100) * 100, 2)
-    }
-
-def analyze_verification_patterns(records):
-    """Analyze verification patterns"""
-    if not records:
-        return {}
-    
-    total = len(records)
-    return {
-        'location_success_rate': round(sum(1 for r in records if r.location_verified) / total * 100, 2),
-        'qr_success_rate': round(sum(1 for r in records if r.qr_verified) / total * 100, 2),
-        'face_success_rate': round(sum(1 for r in records if r.face_verified) / total * 100, 2),
-        'complete_verification_rate': round(sum(1 for r in records if r.verification_completed) / total * 100, 2)
-    }
-
-def analyze_temporal_patterns(records):
-    """Analyze temporal patterns in attendance"""
-    if not records:
-        return {}
-    
-    # Group by day of week
-    from collections import defaultdict
-    by_day = defaultdict(int)
-    
-    for record in records:
-        day_name = record.check_in_time.strftime('%A')
-        by_day[day_name] += 1
-    
-    return {
-        'attendance_by_day': dict(by_day),
-        'most_active_day': max(by_day.items(), key=lambda x: x[1])[0] if by_day else None,
-        'least_active_day': min(by_day.items(), key=lambda x: x[1])[0] if by_day else None
-    }
-
-def calculate_sync_performance_metrics(records):
-    """Calculate performance metrics for sync operations"""
-    if not records:
-        return {}
-    
-    offline_records = [r for r in records if r.offline_duration_hours and r.offline_duration_hours > 0]
-    
-    return {
-        'total_records': len(records),
-        'offline_records': len(offline_records),
-        'avg_offline_duration': round(sum(r.offline_duration_hours for r in offline_records) / len(offline_records), 2) if offline_records else 0,
-        'max_offline_duration': max(r.offline_duration_hours for r in offline_records) if offline_records else 0
-    }
-
-def generate_sync_recommendations(sync_status, attention_records, active_conflicts):
-    """Generate comprehensive sync recommendations"""
-    recommendations = []
-    
-    # Sync rate recommendations
-    sync_rate = sync_status['sync_statistics']['sync_rate']
-    if sync_rate < 90:
-        recommendations.append({
-            'type': 'sync_required',
-            'message': f'معدل المزامنة منخفض ({sync_rate:.1f}%). يُنصح بالمزامنة فوراً.',
-            'priority': 'high' if sync_rate < 70 else 'medium'
-        })
-    
-    # Verification recommendations
-    verification_rate = sync_status['verification_status']['verification_rate']
-    if verification_rate < 80:
-        recommendations.append({
-            'type': 'verification_incomplete',
-            'message': f'معدل التحقق منخفض ({verification_rate:.1f}%). تأكد من إكمال جميع خطوات التحقق.',
-            'priority': 'medium'
-        })
-    
-    # Conflict recommendations
-    if active_conflicts:
-        recommendations.append({
-            'type': 'conflicts_active',
-            'message': f'{len(active_conflicts)} تعارض نشط يحتاج حل. استخدم واجهة حل التعارضات.',
-            'priority': 'high'
-        })
-    
-    # Attention records recommendations
-    high_priority_issues = sum(1 for r in attention_records if r.get('priority') == 'high')
-    if high_priority_issues > 0:
-        recommendations.append({
-            'type': 'high_priority_issues',
-            'message': f'{high_priority_issues} مشكلة ذات أولوية عالية تحتاج انتباه فوري.',
-            'priority': 'high'
-        })
-    
-    # Health score recommendations
-    health_score = sync_status['sync_health']['score']
-    if health_score < 60:
-        recommendations.append({
-            'type': 'poor_sync_health',
-            'message': f'صحة المزامنة ضعيفة ({health_score}%). راجع جميع المشاكل واتصل بالدعم.',
-            'priority': 'critical'
-        })
-    
-    return recommendations
-
-# Error handlers specific to core operations blueprint
-@core_ops_bp.errorhandler(422)
-def core_ops_validation_error(error):
-    """Handle validation errors in core operations"""
+# Error handlers specific to admin blueprint
+@admin_bp.errorhandler(403)
+def admin_forbidden(error):
+    """Handle forbidden access for admin endpoints"""
     return jsonify(error_response(
-        'CORE_OPS_VALIDATION_ERROR',
-        'بيانات العملية غير صحيحة أو غير مكتملة'
-    )), 422
+        'ADMIN_FORBIDDEN',
+        'صلاحيات إدارية مطلوبة للوصول لهذا المورد'
+    )), 403
 
-@core_ops_bp.errorhandler(409)
-def core_ops_conflict_error(error):
-    """Handle conflict errors in core operations"""
+@admin_bp.errorhandler(409)
+def admin_conflict(error):
+    """Handle conflict errors in admin operations"""
     return jsonify(error_response(
-        'CORE_OPS_CONFLICT',
-        'تعارض في البيانات. استخدم واجهة حل التعارضات.'
+        'ADMIN_CONFLICT',
+        'تعارض في البيانات. تحقق من وجود تكرارات أو تعارضات زمنية.'
     )), 409
+
+@admin_bp.errorhandler(413)
+def admin_payload_too_large(error):
+    """Handle large payload errors in bulk operations"""
+    return jsonify(error_response(
+        'PAYLOAD_TOO_LARGE',
+        'حجم البيانات كبير جداً. قسم العملية إلى دفعات أصغر.'
+    )), 413

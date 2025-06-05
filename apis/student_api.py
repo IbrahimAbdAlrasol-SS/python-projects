@@ -8,7 +8,7 @@ from flask import Blueprint, request, jsonify, g
 from security import jwt_required, get_current_user, require_permission
 from models import (
     User, Student, Subject, Room, Schedule, Lecture,
-    UserRole, SectionEnum, SemesterEnum, LectureStatusEnum
+    UserRole, SectionEnum, SemesterEnum, LectureStatusEnum, RoomTypeEnum
 )
 from utils.response_helpers import success_response, error_response, paginated_response
 from utils.validation_helpers import validate_pagination_params, validate_filters
@@ -17,6 +17,9 @@ import logging
 
 # Create blueprint
 student_bp = Blueprint('student', __name__, url_prefix='/api/student')
+
+# Separate blueprint for rooms (can be accessed by different user types)
+rooms_bp = Blueprint('rooms', __name__, url_prefix='/api/rooms')
 
 @student_bp.route('/sync-data', methods=['GET'])
 @jwt_required
@@ -545,8 +548,6 @@ def get_student_schedule():
         return jsonify(error_response('SCHEDULE_ERROR', 'حدث خطأ أثناء تحميل الجدول')), 500
 
 # Rooms Bulk Download API (تحت blueprint منفصل)
-rooms_bp = Blueprint('rooms', __name__, url_prefix='/api/rooms')
-
 @rooms_bp.route('/bulk-download', methods=['GET'])
 @jwt_required
 @require_permission('read_room')
@@ -576,7 +577,11 @@ def bulk_download_rooms():
             query = query.filter_by(floor=floor)
         
         if room_type:
-            query = query.filter_by(room_type=room_type)
+            try:
+                room_type_enum = RoomTypeEnum(room_type)
+                query = query.filter_by(room_type=room_type_enum)
+            except ValueError:
+                return jsonify(error_response('INVALID_ROOM_TYPE', 'نوع القاعة غير صحيح')), 400
         
         # 3. Get rooms ordered by building and name
         rooms = query.order_by(Room.building, Room.name).all()
