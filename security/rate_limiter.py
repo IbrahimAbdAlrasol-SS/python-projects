@@ -44,7 +44,9 @@ def setup_rate_limiting(app: Flask):
             app=app,
             key_func=get_remote_address,
             default_limits=["1000 per hour", "100 per minute"],
-            storage_uri="memory://"
+            storage_uri=storage_uri,
+            storage_options={"socket_connect_timeout": 30},
+            strategy="fixed-window"  # تغيير من "fixed-window-elastic-expiry"
         )
         
         return limiter

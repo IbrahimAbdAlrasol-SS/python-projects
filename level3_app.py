@@ -9,7 +9,8 @@ import os
 import sys
 import logging
 from datetime import datetime
-
+#from app import create_app
+#from app import create_app
 # Add project root to Python path
 project_root = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, project_root)
@@ -28,16 +29,17 @@ def create_level3_app():
     except ImportError:
         # Fallback: Create minimal Flask app
         from flask import Flask
-        from config.database import DatabaseConfig
+        from config.database import DatabaseConfig, init_db
         
         app = Flask(__name__)
         app.config.from_object(DatabaseConfig)
         
-        # Initialize database
-        from config.database import db
-        db.init_app(app)
-        print("✅ Fallback Flask app created")
-    
+        # Use init_db instead of DatabaseConfig.init_app to avoid double registration
+        init_db(app)  # ✅ تصحيح: استدعاء init_db بدلاً من create_level3_app
+        print("✅ Database initialized")
+        
+    # Initialize database
+   
     # Setup security within app context
     with app.app_context():
         try:

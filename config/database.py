@@ -24,6 +24,31 @@ if redis_available:
 else:
     redis_client = None
 
+def init_db(app):
+    """Initialize database with Flask app - avoiding double registration"""
+    if not hasattr(app, 'extensions') or 'sqlalchemy' not in app.extensions:
+        db.init_app(app)
+        migrate.init_app(app, db)
+        
+        # Initialize Redis if available
+        if redis_client is not None:
+            try:
+                redis_client.init_app(app)
+                print("✅ Redis initialized successfully")
+            except Exception as e:
+                print(f"⚠️ Redis not available: {e}")
+        else:
+            print("⚠️ Redis package not available - running without cache")
+        
+        # Create storage directories
+        import pathlib
+        pathlib.Path(app.config.get('STORAGE_PATH', 'storage')).mkdir(parents=True, exist_ok=True)
+        pathlib.Path(app.config.get('UPLOAD_FOLDER', 'storage/uploads')).mkdir(parents=True, exist_ok=True)
+        
+        print("✅ Database initialized successfully")
+    else:
+        print("✅ Database already initialized - skipping")
+
 class DatabaseConfig:
     """Database configuration class"""
     
@@ -46,24 +71,21 @@ class DatabaseConfig:
     @staticmethod
     def init_app(app: Flask):
         """Initialize database with Flask app"""
-        db.init_app(app)
-        migrate.init_app(app, db)
         
-        # Initialize Redis if available
-        if redis_client is not None:
-            try:
-                redis_client.init_app(app)
-                print("✅ Redis initialized successfully")
-            except Exception as e:
-                print(f"⚠️ Redis not available: {e}")
-        else:
-            print("⚠️ Redis package not available - running without cache")
-        
-        # Create storage directories
-        import pathlib
-        pathlib.Path(app.config['STORAGE_PATH']).mkdir(parents=True, exist_ok=True)
-        pathlib.Path(app.config['UPLOAD_FOLDER']).mkdir(parents=True, exist_ok=True)
-        
+        init_db(app)
+    
+
+
+class DatabaseConfig:
+    
+    @staticmethod
+    def init_app(app: Flask):
+        """Initialize database with Flask app"""
+        # استخدام الدالة المنفصلة
+        init_db(app)
+    
+    
+    
     @staticmethod
     def test_connection():
         """Test database connection"""

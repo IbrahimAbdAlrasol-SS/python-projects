@@ -8,6 +8,8 @@ from .rate_limiter import setup_rate_limiting
 from .security_headers import setup_security_headers
 from .cors_config import setup_cors
 from .account_lockout import AccountLockoutManager
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 
 
 def setup_complete_security(app: Flask):
@@ -74,3 +76,19 @@ def register_security_error_handlers(app: Flask):
             'message': 'Rate limit exceeded, please try again later',
             'code': 'RATE_LIMIT_EXCEEDED'
         }, 429
+
+
+def setup_rate_limiting(app):
+    """Setup rate limiting with proper app context"""
+    # Remove this duplicate Limiter creation (lines 83-86)
+    # limiter = Limiter(
+    #     app,
+    #     key_func=get_remote_address,
+    #     default_limits=["200 per day", "50 per hour"]
+    # )
+    # app.limiter = limiter
+    # return limiter
+    
+    # Use the setup_rate_limiting from rate_limiter.py instead
+    from .rate_limiter import setup_rate_limiting as setup_limiter
+    return setup_limiter(app)

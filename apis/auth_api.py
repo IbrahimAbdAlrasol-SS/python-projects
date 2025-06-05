@@ -160,7 +160,7 @@ def teacher_login():
     Teacher authentication with username + password
     مصادقة المدرسين باسم المستخدم + كلمة المرور
     """
-    # Apply rate limiting within the function
+    # في دالة teacher_login
     if hasattr(current_app, 'limiter'):
         try:
             current_app.limiter.check()

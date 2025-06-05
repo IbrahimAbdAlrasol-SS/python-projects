@@ -6,14 +6,15 @@
 
 import os
 import logging
+import logging.handlers
 from datetime import datetime, timedelta
 from flask import Flask, request, g, jsonify
 from flask_cors import CORS
-from flask_limiter import Limiter
+#from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 
 # Import configurations
-from config.database import db, redis_client, init_db
+from config.database import db, redis_client
 from config.settings import Config
 
 # Import security components
@@ -24,14 +25,15 @@ from security import (
 
 # Import all API blueprints
 from apis.auth_api import auth_bp
-from apis.student_api_complete import student_bp, rooms_bp
-from apis.admin_api_complete import admin_bp
+from apis.student_api import student_bp, rooms_bp  # إضافة rooms_bp هنا
+from apis.student_api import student_bp  # ✅ استخدام الملف الموجود
+from apis.admin_api import admin_bp      # ✅ استخدام الملف الموجود
 from apis.attendance_api import attendance_bp
 from apis.reports_api import reports_bp
 from apis.health_api import health_bp
 
 # Import core operations (alternative implementation)
-from core_operations_complete import core_ops_bp
+#from core_operations_complete import core_ops_bp
 
 # Import utilities
 from utils.response_helpers import success_response, error_response
@@ -40,34 +42,29 @@ from utils.validation_helpers import InputValidator
 # Import models for initialization
 from models import *
 from data.sample_data import generate_complete_sample_data
-
-def create_app(config_class=Config):
-    """Application factory pattern"""
-    
-    # 1. Initialize Flask application
+# Import configurations
+from config.database import db, redis_client, init_db  # إضافة init_db
+from config.settings import Config
+def create_app():
     app = Flask(__name__)
-    app.config.from_object(config_class)
+    app.config.from_object(Config)
     
-    # 2. Initialize extensions
+    # 1. Initialize database
     init_db(app)
+    
+    # 2. Setup security (includes rate limiting)
     init_security(app)
     
-    # 3. Configure CORS
-    CORS(app, 
-         origins=app.config.get('CORS_ORIGINS', ['http://localhost:3000']),
-         methods=['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-         allow_headers=['Content-Type', 'Authorization', 'X-Client-Timezone'],
-         supports_credentials=True)
+    # Remove these lines (60-68):
+    # limiter = Limiter(
+    #     app,
+    #     key_func=get_remote_address,
+    #     default_limits=["1000 per hour", "100 per minute"],
+    #     storage_uri="redis://localhost:6379"
+    # )
+    # app.limiter = limiter
     
-    # 4. Configure rate limiting
-    limiter = Limiter(
-        app,
-        key_func=get_remote_address,
-        default_limits=["1000 per hour", "100 per minute"],
-        storage_uri="redis://localhost:6379"
-    )
-    app.limiter = limiter
-    
+    # ... existing code ...
     # 5. Configure logging
     setup_logging(app)
     
@@ -206,7 +203,7 @@ def register_blueprints(app):
         
         # Core Operations APIs (4 endpoints)
         (attendance_bp, 'Attendance APIs'),
-        (core_ops_bp, 'Core Operations APIs'),  # Alternative implementation
+        #(core_ops_bp, 'Core Operations APIs'),  # Alternative implementation
         
         # Reports APIs (3 endpoints)
         (reports_bp, 'Reports APIs'),
@@ -359,19 +356,6 @@ def setup_app_context(app):
     """Setup application context and initialize data"""
     
     @app.cli.command()
-    def init_db_command():
-        """Initialize database with tables and indexes"""
-        try:
-            print("Creating database tables...")
-            db.create_all()
-            
-            # Create performance indexes
-            from database.indexes import create_performance_indexes
-            create_performance_indexes()
-            
-            print("✅ Database initialized successfully!")
-        except Exception as e:
-            print(f"❌ Database initialization failed: {str(e)}")
     
     @app.cli.command()
     def create_sample_data():

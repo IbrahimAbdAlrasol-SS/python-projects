@@ -2,19 +2,31 @@
 Example authentication routes using the security layer
 مثال على استخدام نظام الأمان
 """
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, current_app
 from security import (
     jwt_manager, PasswordManager, InputValidator,
     jwt_required, get_current_user, require_permission
 )
 from models import User, Student, UserRole
 
-auth_bp = Blueprint('auth', name, url_prefix='/api/auth')
+# Fix: Use __name__ instead of name
+auth_bp = Blueprint('auth', __name__, url_prefix='/api/auth')  # Fix: __name__ instead of name
 
 @auth_bp.route('/student-login', methods=['POST'])
-@limiter.limit("5 per minute")  # Rate limiting
+# @limiter.limit("5 per minute")  # Remove this problematic decorator
 def student_login():
     """Student login with complete security"""
+    # Apply rate limiting within the function instead
+    from flask import current_app
+    if hasattr(current_app, 'limiter'):
+        try:
+            current_app.limiter.check()
+        except Exception as e:
+            return jsonify({
+                'error': 'RATE_LIMIT_EXCEEDED',
+                'message': 'تم تجاوز الحد المسموح من المحاولات، يرجى المحاولة لاحقاً'
+            }), 429
+    
     # 1. Input validation
     data = request.get_json()
 
