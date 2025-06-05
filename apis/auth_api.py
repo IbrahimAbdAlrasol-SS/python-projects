@@ -5,7 +5,6 @@ Implementation: 3 core authentication endpoints
 """
 
 from flask import Blueprint, request, jsonify, current_app, g
-from flask_limiter.util import get_remote_address
 from werkzeug.security import check_password_hash
 from security import (
     jwt_manager, PasswordManager, InputValidator,
@@ -22,13 +21,13 @@ import uuid
 auth_bp = Blueprint('auth', __name__, url_prefix='/api/auth')
 
 @auth_bp.route('/student-login', methods=['POST'])
+# @current_app.limiter.limit("5 per minute")  # تعليق مؤقت
 def student_login():
     """
     POST /api/auth/student-login
     Student authentication with university_id + secret_code
     مصادقة الطلاب بالرقم الجامعي + الكود السري
     """
-    # Rate limiting will be handled at app level
     try:
         # 1. Input validation
         data = request.get_json()

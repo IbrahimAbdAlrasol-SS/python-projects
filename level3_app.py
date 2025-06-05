@@ -1,142 +1,337 @@
+#!/usr/bin/env python3
 """
-🔌 Level 3: Core API Endpoints & Routing
-نظام الـ APIs الأساسية - المرحلة الثالثة
+🔌 Level 3: Core API Endpoints Implementation
+Smart Attendance System - Main Application Entry Point
+Fixed Application Context Issues
 """
 
-from flask import Flask
+import os
+import sys
+import logging
 from datetime import datetime
 
+# Add project root to Python path
+project_root = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, project_root)
+
 def create_level3_app():
-    """Create Level 3 Application with Core APIs"""
+    """Create and configure Flask application for Level 3"""
     
-    # Create Flask app
-    app = Flask(__name__)
+    print("🔌 Starting Level 3: Core API Endpoints")
+    print("=" * 50)
     
-    # Import configurations
-    from config.database import DatabaseConfig
-    from security.setup_security import setup_complete_security
+    # Fix: Use the existing create_app from app.py instead of non-existent config.app_config
+    from app import create_app
     
-    # Configure app
-    app.config.from_object(DatabaseConfig)
-    DatabaseConfig.init_app(app)
+    # Create Flask app with configurations
+    app = create_app()
     
-    # Setup security layer
-    setup_complete_security(app)
+    # Initialize security layer within app context
+    with app.app_context():
+        from security import setup_security_layer
+        setup_security_layer(app)
+        print("🔐 Security layer setup completed!")
     
-    # Register API blueprints
+    # Import and setup models
+    with app.app_context():
+        from models import print_model_summary
+        print_model_summary()
+    
+    # Register API blueprints AFTER app context is established
     register_api_blueprints(app)
     
     # Setup error handlers
-    setup_api_error_handlers(app)
+    setup_error_handlers(app)
     
-    # Setup middleware
-    setup_api_middleware(app)
+    # Initialize database (if needed)
+    with app.app_context():
+        setup_database(app)
+    
+    print("\n🚀 Level 3 Application Ready!")
+    print("📋 Available APIs:")
+    print("   • Authentication: 3 endpoints")
+    print("   • Pre-Sync: 4 endpoints") 
+    print("   • Core Operations: 4 endpoints")
+    print("   • Admin Management: 6 endpoints")
+    print("   • Reports: 3 endpoints")
+    print("   • Health Check: 1 endpoint")
+    print("=" * 50)
+    
+    # Create Flask app directly
+    from flask import Flask
+    from config.database import DatabaseConfig
+    
+    def create_level3_app():
+        app = Flask(__name__)
+        app.config.from_object(DatabaseConfig)
+        return app
+    
+    app = create_level3_app()
+    
+    # Initialize security layer within app context
+    with app.app_context():
+        from security import setup_security_layer
+        setup_security_layer(app)
+        print("🔐 Security layer setup completed!")
+    
+    # Import and setup models
+    with app.app_context():
+        from models import print_model_summary
+        print_model_summary()
+    
+    # Register API blueprints AFTER app context is established
+    register_api_blueprints(app)
+    
+    # Setup error handlers
+    setup_error_handlers(app)
+    
+    # Initialize database (if needed)
+    with app.app_context():
+        setup_database(app)
+    
+    print("\n🚀 Level 3 Application Ready!")
+    print("📋 Available APIs:")
+    print("   • Authentication: 3 endpoints")
+    print("   • Pre-Sync: 4 endpoints") 
+    print("   • Core Operations: 4 endpoints")
+    print("   • Admin Management: 6 endpoints")
+    print("   • Reports: 3 endpoints")
+    print("   • Health Check: 1 endpoint")
+    print("=" * 50)
     
     return app
 
 def register_api_blueprints(app):
-    """Register all API blueprints"""
+    """Register all API blueprints with proper error handling"""
     
-    # Import blueprints
-    from apis.auth_api import auth_bp
-    from apis.student_api import student_bp
-    from apis.admin_api import admin_bp
-    from apis.attendance_api import attendance_bp
-    from apis.reports_api import reports_bp
-    from apis.health_api import health_bp
-    
-    # Register blueprints
-    app.register_blueprint(auth_bp)
-    app.register_blueprint(student_bp)
-    app.register_blueprint(admin_bp)
-    app.register_blueprint(attendance_bp)
-    app.register_blueprint(reports_bp)
-    app.register_blueprint(health_bp)
-    
-    print("✅ All API blueprints registered")
+    try:
+        # Import blueprints within app context to avoid context issues
+        with app.app_context():
+            from apis.auth_api import auth_bp
+            from apis.student_api import student_bp, rooms_bp
+            from apis.admin_api import admin_bp
+            from apis.attendance_api import attendance_bp
+            from apis.reports_api import reports_bp
+            from apis.health_api import health_bp
+            
+            # Register blueprints
+            app.register_blueprint(auth_bp)
+            app.register_blueprint(student_bp)
+            app.register_blueprint(rooms_bp)
+            app.register_blueprint(admin_bp)
+            app.register_blueprint(attendance_bp)
+            app.register_blueprint(reports_bp)
+            app.register_blueprint(health_bp)
+            
+            print("✅ All API blueprints registered successfully")
+            
+    except Exception as e:
+        print(f"❌ Error registering blueprints: {str(e)}")
+        raise
 
-def setup_api_error_handlers(app):
-    """Setup comprehensive error handlers"""
-    from flask import jsonify
-    from werkzeug.exceptions import HTTPException
+def setup_error_handlers(app):
+    """Setup global error handlers"""
     
-    @app.errorhandler(HTTPException)
-    def handle_http_error(e):
-        """Handle HTTP errors with standardized format"""
-        return jsonify({
+    @app.errorhandler(404)
+    def not_found(error):
+        return {
             'success': False,
             'error': {
-                'code': f'HTTP_{e.code}',
-                'message': e.description or 'An error occurred',
-                'timestamp': datetime.utcnow().isoformat()
+                'code': 'NOT_FOUND',
+                'message': 'المورد المطلوب غير موجود'
             }
-        }), e.code
-
-    @app.errorhandler(Exception)
-    def handle_generic_error(e):
-        """Handle unexpected errors"""
-        app.logger.error(f'Unhandled exception: {str(e)}', exc_info=True)
-        return jsonify({
+        }, 404
+    
+    @app.errorhandler(500)
+    def internal_error(error):
+        return {
             'success': False,
             'error': {
                 'code': 'INTERNAL_ERROR',
-                'message': 'حدث خطأ غير متوقع، يرجى المحاولة لاحقاً',
-                'timestamp': datetime.utcnow().isoformat()
+                'message': 'حدث خطأ داخلي في الخادم'
             }
-        }), 500
-
-    @app.errorhandler(ValueError)
-    def handle_validation_error(e):
-        """Handle input validation errors"""
-        return jsonify({
+        }, 500
+    
+    @app.errorhandler(429)
+    def rate_limit_exceeded(error):
+        return {
             'success': False,
             'error': {
-                'code': 'VALIDATION_ERROR',
-                'message': 'بيانات غير صحيحة',
-                'details': str(e),
-                'timestamp': datetime.utcnow().isoformat()
+                'code': 'RATE_LIMIT_EXCEEDED',
+                'message': 'تم تجاوز الحد المسموح من الطلبات'
             }
-        }), 400
+        }, 429
 
-def setup_api_middleware(app):
-    """Setup API middleware"""
-    from flask import request, g
-    import time
+def setup_database(app):
+    """Initialize database if needed"""
     
-    @app.before_request
-    def before_request():
-        """Execute before each request"""
-        g.start_time = time.time()
-        g.request_id = request.headers.get('X-Request-ID', 'unknown')
-    
-    @app.after_request
-    def after_request(response):
-        """Execute after each request"""
-        total_time = time.time() - g.start_time
+    try:
+        from config.database import db
         
-        # Log slow requests
-        if total_time > 2.0:
-            app.logger.warning(
-                f'Slow request: {request.method} {request.path} '
-                f'took {total_time:.2f}s - Request ID: {g.request_id}'
+        # Create tables if they don't exist
+        db.create_all()
+        print("✅ Database tables verified/created")
+        
+        # Check if we need sample data
+        from models import User, Student, Subject, Room
+        
+        if User.query.count() == 0:
+            print("📊 Creating sample data...")
+            create_sample_data()
+            print("✅ Sample data created")
+        else:
+            print("📊 Sample data already exists")
+            
+    except Exception as e:
+        print(f"❌ Database setup error: {str(e)}")
+
+def create_sample_data():
+    """Create sample data for testing"""
+    
+    from config.database import db
+    from models import User, Student, Teacher, Subject, Room, UserRole, SectionEnum, StudyTypeEnum, RoomTypeEnum, SemesterEnum
+    from security import PasswordManager
+    import secrets
+    
+    try:
+        # Create admin user
+        admin_user = User(
+            username='admin',
+            email='admin@university.edu',
+            full_name='System Administrator',
+            role=UserRole.ADMIN,
+            is_active=True
+        )
+        admin_user.set_password('Admin123!')
+        db.session.add(admin_user)
+        
+        # Create sample teacher
+        teacher_user = User(
+            username='teacher1',
+            email='teacher1@university.edu',
+            full_name='Dr. Ahmed Mohammed',
+            role=UserRole.TEACHER,
+            is_active=True
+        )
+        teacher_user.set_password('Teacher123!')
+        db.session.add(teacher_user)
+        db.session.flush()
+        
+        teacher = Teacher(
+            user_id=teacher_user.id,
+            employee_id='T001',
+            department='Computer Science',
+            specialization='Software Engineering'
+        )
+        db.session.add(teacher)
+        
+        # Create sample students
+        for i in range(1, 6):
+            student_user = User(
+                username=f'cs202400{i}',
+                email=f'student{i}@student.university.edu',
+                full_name=f'Student {i}',
+                role=UserRole.STUDENT,
+                is_active=True
             )
+            student_user.set_password('Student123!')
+            db.session.add(student_user)
+            db.session.flush()
+            
+            student = Student(
+                user_id=student_user.id,
+                university_id=f'CS202400{i}',
+                section=SectionEnum.A,
+                study_year=2,
+                study_type=StudyTypeEnum.MORNING
+            )
+            student.set_secret_code(f'SEC{i:03d}')
+            db.session.add(student)
         
-        # Add performance headers
-        response.headers['X-Response-Time'] = f'{total_time:.3f}s'
-        response.headers['X-Request-ID'] = g.request_id
-        response.headers['X-API-Version'] = '1.0'
+        # Create sample subjects
+        subjects_data = [
+            {'code': 'CS201', 'name': 'Data Structures', 'credit_hours': 3, 'study_year': 2, 'semester': SemesterEnum.FIRST},
+            {'code': 'CS202', 'name': 'Algorithms', 'credit_hours': 3, 'study_year': 2, 'semester': SemesterEnum.FIRST},
+            {'code': 'CS203', 'name': 'Database Systems', 'credit_hours': 3, 'study_year': 2, 'semester': SemesterEnum.SECOND}
+        ]
         
-        return response
+        for subject_data in subjects_data:
+            subject = Subject(
+                department='Computer Science',
+                **subject_data
+            )
+            db.session.add(subject)
+        
+        # Create sample rooms
+        rooms_data = [
+            {'name': 'A101', 'building': 'Building A', 'floor': 1, 'capacity': 30, 'lat': 33.3152, 'lng': 44.3661},
+            {'name': 'A102', 'building': 'Building A', 'floor': 1, 'capacity': 25, 'lat': 33.3153, 'lng': 44.3662},
+            {'name': 'B201', 'building': 'Building B', 'floor': 2, 'capacity': 40, 'lat': 33.3154, 'lng': 44.3663}
+        ]
+        
+        for room_data in rooms_data:
+            room = Room(
+                name=room_data['name'],
+                building=room_data['building'],
+                floor=room_data['floor'],
+                room_type=RoomTypeEnum.CLASSROOM,
+                capacity=room_data['capacity'],
+                center_latitude=room_data['lat'],
+                center_longitude=room_data['lng'],
+                ground_reference_altitude=50.0,
+                floor_altitude=50.0 + (room_data['floor'] * 3),
+                ceiling_height=3.0
+            )
+            # Auto-generate GPS polygon
+            room.set_rectangular_polygon(room_data['lat'], room_data['lng'])
+            db.session.add(room)
+        
+        db.session.commit()
+        print("✅ Sample data created successfully")
+        
+    except Exception as e:
+        db.session.rollback()
+        print(f"❌ Error creating sample data: {str(e)}")
+        raise
+
+def setup_logging():
+    """Setup application logging"""
+    
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler('logs/level3_app.log'),
+            logging.StreamHandler(sys.stdout)
+        ]
+    )
 
 if __name__ == '__main__':
-    print("🔌 Starting Level 3: Core API Endpoints")
-    print("=" * 50)
+    # Setup logging
+    os.makedirs('logs', exist_ok=True)
+    setup_logging()
     
-    app = create_level3_app()
-    
-    print("🚀 Level 3 application ready!")
-    print("📍 API Endpoints: 20 total")
-    print("🔐 Security: Enabled")
-    print("📊 Monitoring: Active")
-    
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    try:
+        # Create application
+        app = create_level3_app()
+        
+        # Run development server
+        print("\n🌐 Starting development server...")
+        print("📍 Server URL: http://localhost:5000")
+        print("📚 API Documentation: http://localhost:5000/docs")
+        print("🏥 Health Check: http://localhost:5000/api/health")
+        print("\n⚡ Press Ctrl+C to stop the server")
+        print("=" * 50)
+        
+        app.run(
+            host='0.0.0.0',
+            port=5000,
+            debug=True,
+            use_reloader=False  # Avoid reloader issues with context
+        )
+        
+    except KeyboardInterrupt:
+        print("\n👋 Server stopped by user")
+    except Exception as e:
+        print(f"\n❌ Application failed to start: {str(e)}")
+        sys.exit(1)
