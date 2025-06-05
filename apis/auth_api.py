@@ -1,5 +1,5 @@
 """
-🔐 Authentication APIs - مجموعة المصادقة الكاملة
+🔐 Authentication APIs - مجموعة المصادقة الكاملة (FIXED)
 Implementation: 3 core authentication endpoints
 اليوم 1: التطبيق الكامل للمصادقة
 """
@@ -21,13 +21,24 @@ import uuid
 auth_bp = Blueprint('auth', __name__, url_prefix='/api/auth')
 
 @auth_bp.route('/student-login', methods=['POST'])
-# @current_app.limiter.limit("5 per minute")  # تعليق مؤقت
 def student_login():
     """
     POST /api/auth/student-login
     Student authentication with university_id + secret_code
     مصادقة الطلاب بالرقم الجامعي + الكود السري
     """
+    # Apply rate limiting within the function
+    from flask_limiter import Limiter
+    if hasattr(current_app, 'limiter'):
+        # Check if rate limit is exceeded
+        try:
+            current_app.limiter.check()
+        except Exception as e:
+            return jsonify(error_response(
+                'RATE_LIMIT_EXCEEDED',
+                'تم تجاوز الحد المسموح من المحاولات، يرجى المحاولة لاحقاً'
+            )), 429
+    
     try:
         # 1. Input validation
         data = request.get_json()
@@ -143,13 +154,22 @@ def student_login():
         return jsonify(error_response('LOGIN_ERROR', 'حدث خطأ أثناء تسجيل الدخول')), 500
 
 @auth_bp.route('/teacher-login', methods=['POST'])
-@current_app.limiter.limit("5 per minute")
 def teacher_login():
     """
     POST /api/auth/teacher-login
     Teacher authentication with username + password
     مصادقة المدرسين باسم المستخدم + كلمة المرور
     """
+    # Apply rate limiting within the function
+    if hasattr(current_app, 'limiter'):
+        try:
+            current_app.limiter.check()
+        except Exception as e:
+            return jsonify(error_response(
+                'RATE_LIMIT_EXCEEDED',
+                'تم تجاوز الحد المسموح من المحاولات، يرجى المحاولة لاحقاً'
+            )), 429
+    
     try:
         # 1. Input validation
         data = request.get_json()
