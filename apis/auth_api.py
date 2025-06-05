@@ -1,9 +1,11 @@
 """
-🔐 Authentication APIs - مجموعة المصادقة
-Group 2: Authentication APIs (3 endpoints)
+🔐 Authentication APIs - مجموعة المصادقة الكاملة
+Implementation: 3 core authentication endpoints
+اليوم 1: التطبيق الكامل للمصادقة
 """
 
-from flask import Blueprint, request, jsonify, g, current_app
+from flask import Blueprint, request, jsonify, current_app, g
+from werkzeug.security import check_password_hash
 from security import (
     jwt_manager, PasswordManager, InputValidator,
     jwt_required, get_current_user, require_permission
@@ -11,7 +13,9 @@ from security import (
 from models import User, Student, Teacher, UserRole
 from utils.response_helpers import success_response, error_response
 from utils.validation_helpers import validate_required_fields
+from datetime import datetime, timedelta
 import logging
+import uuid
 
 # Create blueprint
 auth_bp = Blueprint('auth', __name__, url_prefix='/api/auth')
@@ -22,12 +26,16 @@ def student_login():
     """
     POST /api/auth/student-login
     Student authentication with university_id + secret_code
+    مصادقة الطلاب بالرقم الجامعي + الكود السري
     """
     try:
         # 1. Input validation
         data = request.get_json()
         if not data:
-            return jsonify(error_response('INVALID_INPUT', 'JSON body is required')), 400
+            return jsonify(error_response(
+                'INVALID_INPUT', 
+                'البيانات المدخلة غير صحيحة'
+            )), 400
         
         # Validate required fields
         required_fields = ['university_id', 'secret_code']
@@ -46,7 +54,7 @@ def student_login():
             return jsonify(error_response('INVALID_ID_FORMAT', error_msg)), 400
         
         # 2. Check account lockout
-        lockout_manager = current_app.lockout_manager
+        lockout_manager = getattr(current_app, 'lockout_manager', None)
         if lockout_manager:
             is_locked, unlock_time = lockout_manager.is_locked(university_id)
             if is_locked:
@@ -103,7 +111,7 @@ def student_login():
         user.update_last_login()
         
         # 9. Log successful login
-        logging.info(f'Successful student login: {university_id}')
+        logging.info(f'Successful student login: {university_id} from IP: {request.remote_addr}')
         
         # 10. Return success response
         return jsonify(success_response({
@@ -116,13 +124,19 @@ def student_login():
                 'user_id': user.id,
                 'university_id': student.university_id,
                 'full_name': user.full_name,
+                'email': user.email,
                 'section': student.section.value,
                 'study_year': student.study_year,
                 'study_type': student.study_type.value,
                 'face_registered': student.face_registered,
+                'telegram_connected': student.telegram_id is not None,
                 'role': user.role.value
-            }
-        }))
+            },
+            'permissions': [
+                'read_own_profile', 'update_own_profile', 'read_own_schedule', 
+                'read_own_attendance', 'submit_attendance', 'submit_assignment'
+            ]
+        }, message='تم تسجيل الدخول بنجاح'))
         
     except Exception as e:
         logging.error(f'Student login error: {str(e)}', exc_info=True)
@@ -134,12 +148,13 @@ def teacher_login():
     """
     POST /api/auth/teacher-login
     Teacher authentication with username + password
+    مصادقة المدرسين باسم المستخدم + كلمة المرور
     """
     try:
         # 1. Input validation
         data = request.get_json()
         if not data:
-            return jsonify(error_response('INVALID_INPUT', 'JSON body is required')), 400
+            return jsonify(error_response('INVALID_INPUT', 'البيانات المدخلة غير صحيحة')), 400
         
         # Validate required fields
         required_fields = ['username', 'password']
@@ -148,12 +163,19 @@ def teacher_login():
             return jsonify(validation_error), 400
         
         # Sanitize inputs
-        username = InputValidator.sanitize_string(data.get('username', ''))
+        username = InputValidator.sanitize_string(data.get('username', '')).lower()
         password = data.get('password', '')
         device_fingerprint = InputValidator.sanitize_string(data.get('device_fingerprint', ''))
         
+        # Basic validation
+        if len(username) < 3:
+            return jsonify(error_response('INVALID_USERNAME', 'اسم المستخدم قصير جداً')), 400
+        
+        if len(password) < 6:
+            return jsonify(error_response('INVALID_PASSWORD', 'كلمة المرور قصيرة جداً')), 400
+        
         # 2. Check account lockout
-        lockout_manager = current_app.lockout_manager
+        lockout_manager = getattr(current_app, 'lockout_manager', None)
         if lockout_manager:
             is_locked, unlock_time = lockout_manager.is_locked(username)
             if is_locked:
@@ -214,7 +236,7 @@ def teacher_login():
         user.update_last_login()
         
         # 10. Log successful login
-        logging.info(f'Successful teacher login: {username}')
+        logging.info(f'Successful teacher login: {username} from IP: {request.remote_addr}')
         
         # 11. Return success response
         return jsonify(success_response({
@@ -227,12 +249,21 @@ def teacher_login():
                 'user_id': user.id,
                 'username': user.username,
                 'full_name': user.full_name,
+                'email': user.email,
                 'employee_id': teacher.employee_id,
                 'department': teacher.department,
+                'specialization': teacher.specialization,
                 'academic_degree': teacher.academic_degree.value if teacher.academic_degree else None,
+                'office_location': teacher.office_location,
+                'subjects': teacher.subjects or [],
                 'role': user.role.value
-            }
-        }))
+            },
+            'permissions': [
+                'read_student', 'read_schedule', 'read_attendance', 'update_attendance',
+                'generate_qr', 'create_lecture', 'update_lecture', 'generate_reports',
+                'create_assignment', 'update_assignment', 'grade_assignment'
+            ]
+        }, message='تم تسجيل الدخول بنجاح'))
         
     except Exception as e:
         logging.error(f'Teacher login error: {str(e)}', exc_info=True)
@@ -244,6 +275,7 @@ def refresh_token():
     """
     POST /api/auth/refresh-token
     Refresh JWT access token
+    تجديد الرمز المميز للوصول
     """
     try:
         # 1. Get current user
@@ -268,15 +300,16 @@ def refresh_token():
             jwt_manager.blacklist_token(old_jti, datetime.fromtimestamp(old_exp))
         
         # 6. Log token refresh
-        logging.info(f'Token refreshed for user: {user.username}')
+        logging.info(f'Token refreshed for user: {user.username} ({user.role.value})')
         
         # 7. Return new tokens
         return jsonify(success_response({
             'access_token': tokens['access_token'],
             'refresh_token': tokens['refresh_token'],
             'expires_in': tokens['expires_in'],
-            'token_type': 'Bearer'
-        }))
+            'token_type': 'Bearer',
+            'refreshed_at': datetime.utcnow().isoformat()
+        }, message='تم تجديد الرمز المميز بنجاح'))
         
     except Exception as e:
         logging.error(f'Token refresh error: {str(e)}', exc_info=True)
@@ -288,6 +321,7 @@ def logout():
     """
     POST /api/auth/logout
     Logout and blacklist token
+    تسجيل الخروج وإبطال الرمز المميز
     """
     try:
         # 1. Get token info
@@ -302,18 +336,16 @@ def logout():
                 logging.warning(f'Failed to blacklist token for user {user_id}')
         
         # 3. Log logout
-        logging.info(f'User logged out: {user_id}')
+        logging.info(f'User logged out: {user_id} from IP: {request.remote_addr}')
         
         # 4. Return success
         return jsonify(success_response({
-            'message': 'تم تسجيل الخروج بنجاح'
-        }))
+            'logged_out_at': datetime.utcnow().isoformat()
+        }, message='تم تسجيل الخروج بنجاح'))
         
     except Exception as e:
         logging.error(f'Logout error: {str(e)}', exc_info=True)
         return jsonify(error_response('LOGOUT_ERROR', 'حدث خطأ أثناء تسجيل الخروج')), 500
-
-# Additional utility endpoints for authentication
 
 @auth_bp.route('/validate-token', methods=['GET'])
 @jwt_required
@@ -321,6 +353,7 @@ def validate_token():
     """
     GET /api/auth/validate-token
     Validate current token and return user info
+    التحقق من صحة الرمز المميز وإرجاع معلومات المستخدم
     """
     try:
         user = get_current_user()
@@ -332,8 +365,10 @@ def validate_token():
             'user_id': user.id,
             'username': user.username,
             'full_name': user.full_name,
+            'email': user.email,
             'role': user.role.value,
-            'is_active': user.is_active
+            'is_active': user.is_active,
+            'last_login': user.last_login.isoformat() if user.last_login else None
         }
         
         # Add role-specific data
@@ -345,7 +380,9 @@ def validate_token():
                     'university_id': student.university_id,
                     'section': student.section.value,
                     'study_year': student.study_year,
-                    'face_registered': student.face_registered
+                    'study_type': student.study_type.value,
+                    'face_registered': student.face_registered,
+                    'telegram_connected': student.telegram_id is not None
                 })
         
         elif user.role == UserRole.TEACHER:
@@ -354,7 +391,8 @@ def validate_token():
                 user_data.update({
                     'teacher_id': teacher.id,
                     'employee_id': teacher.employee_id,
-                    'department': teacher.department
+                    'department': teacher.department,
+                    'academic_degree': teacher.academic_degree.value if teacher.academic_degree else None
                 })
         
         return jsonify(success_response({
@@ -362,7 +400,8 @@ def validate_token():
             'user': user_data,
             'token_info': {
                 'expires_at': datetime.fromtimestamp(g.jwt_payload.get('exp')).isoformat(),
-                'issued_at': datetime.fromtimestamp(g.jwt_payload.get('iat')).isoformat()
+                'issued_at': datetime.fromtimestamp(g.jwt_payload.get('iat')).isoformat(),
+                'issuer': g.jwt_payload.get('iss', 'attendance-system')
             }
         }))
         
@@ -379,3 +418,19 @@ def auth_rate_limit_exceeded(e):
         'تم تجاوز الحد المسموح من المحاولات، يرجى المحاولة لاحقاً',
         {'retry_after': '60 seconds'}
     )), 429
+
+@auth_bp.errorhandler(400)
+def auth_bad_request(e):
+    """Handle bad request errors in auth"""
+    return jsonify(error_response(
+        'BAD_REQUEST',
+        'طلب غير صحيح، يرجى التحقق من البيانات المرسلة'
+    )), 400
+
+@auth_bp.errorhandler(401)
+def auth_unauthorized(e):
+    """Handle unauthorized errors in auth"""
+    return jsonify(error_response(
+        'UNAUTHORIZED',
+        'غير مصرح، يرجى تسجيل الدخول أولاً'
+    )), 401
